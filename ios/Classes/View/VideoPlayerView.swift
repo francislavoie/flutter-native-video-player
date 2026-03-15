@@ -82,15 +82,9 @@ import QuartzCore
     var desiredPlaybackSpeed: Float = 1.0
 
     // Store HDR setting
-    var enableHDR: Bool = false
-
     // Store looping setting
     var enableLooping: Bool = false
 
-    // Track if app is in background to keep audio playing on screen lock
-    var isInBackground: Bool = false
-    var lastKnownRate: Float = 0.0
-    
     // DRM handler for protected content
     var drmHandler: VideoPlayerDrmHandler?
 
@@ -192,9 +186,6 @@ import QuartzCore
             let argsCanStartAutomatically = args["canStartPictureInPictureAutomatically"] as? Bool ?? true
             let argsShowNativeControls = args["showNativeControls"] as? Bool ?? true
 
-            // HDR configuration from args
-            enableHDR = args["enableHDR"] as? Bool ?? false
-
             // Looping configuration from args
             enableLooping = args["enableLooping"] as? Bool ?? false
 
@@ -227,7 +218,6 @@ import QuartzCore
                 // It will be enabled when this specific player starts playing (if allowed)
                 // This prevents conflicts when multiple players exist
                 playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
-            } else {
             }
 
             // Store media info if provided during initialization
@@ -260,14 +250,12 @@ import QuartzCore
                 if isActiveForAutoPiP || isPlaying {
                     if canStartPictureInPictureAutomatically {
                         // Check if manual PiP is active - if so, skip re-enabling automatic PiP
-                        if SharedPlayerManager.shared.isManualPiPActive(controllerIdValue) {
-                        } else {
+                        if !SharedPlayerManager.shared.isManualPiPActive(controllerIdValue) {
                             // Set this new view as the primary view
                             SharedPlayerManager.shared.setPrimaryView(viewId, for: controllerIdValue)
                             // Re-apply automatic PiP settings to enable it on this new view
                             SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
                         }
-                    } else {
                     }
                 }
             }
@@ -332,6 +320,7 @@ import QuartzCore
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
             try AVAudioSession.sharedInstance().setActive(true, options: [])
         } catch {
+            NSLog("[VideoPlayer] Audio session error: \(error.localizedDescription)")
         }
     }
 
@@ -456,7 +445,6 @@ import QuartzCore
             if let mediaInfo = mediaInfo {
                 alternativeView.setupNowPlayingInfo(mediaInfo: mediaInfo)
                 ownershipTransferred = true
-            } else {
             }
         }
 
@@ -545,8 +533,7 @@ import QuartzCore
                 let durationSeconds = CMTimeGetSeconds(currentItem.duration)
 
                 // Check for NaN or invalid times
-                if currentTimeSeconds.isNaN || durationSeconds.isNaN {
-                } else {
+                if !currentTimeSeconds.isNaN && !durationSeconds.isNaN {
                     let duration = Int(durationSeconds * 1000)
                     let position = Int(currentTimeSeconds * 1000)
                     sendEvent("timeUpdated", data: ["position": position, "duration": duration])
@@ -638,10 +625,6 @@ import QuartzCore
 
         // ALWAYS emit PiP state on disposal to ensure Flutter side is synchronized
         // This is important for state management even if PiP is not active
-        if isPipActiveNow {
-        } else {
-        }
-
         // Always send pipStop event - either from this view or an alternative
         if eventSink != nil {
             // This view still has a listener, send from here
@@ -651,7 +634,6 @@ import QuartzCore
                   alternativeView.eventSink != nil {
             // Send from alternative view if it exists and has a listener
             alternativeView.sendEvent("pipStop", data: ["isPictureInPicture": false])
-        } else {
         }
 
         // Try to stop PiP gracefully if it was active
@@ -709,11 +691,12 @@ import QuartzCore
             removeItemObservers(from: item)
         }
 
-        // Remove player observer for timeControlStatus
-        player?.removeObserver(self, forKeyPath: "timeControlStatus")
-
-        // Remove player observer for externalPlaybackActive
-        player?.removeObserver(self, forKeyPath: "externalPlaybackActive")
+        // Only remove player-level observers if they were added
+        if hasPlayerObservers {
+            player?.removeObserver(self, forKeyPath: "timeControlStatus")
+            player?.removeObserver(self, forKeyPath: "externalPlaybackActive")
+            hasPlayerObservers = false
+        }
 
         // Remove route detector observer
         if #available(iOS 11.0, *) {
@@ -735,15 +718,13 @@ import QuartzCore
         currentMediaInfo = nil
         if !isPipActiveNow {
             // Only clear from SharedPlayerManager if PiP is NOT active
+            // and this is the last view for the controller
             if let controllerIdValue = controllerId {
-                // But first check if there are other views using this controller
                 let otherViews = SharedPlayerManager.shared.findAllViewsForController(controllerIdValue)
                 if otherViews.count <= 1 {
-                    // This is the last view, safe to clear media info
-                } else {
+                    SharedPlayerManager.shared.setMediaInfo(for: controllerIdValue, mediaInfo: [:])
                 }
             }
-        } else {
         }
 
         // Emit current state to all remaining views for this controller
@@ -770,10 +751,6 @@ import QuartzCore
         // They're managed by SharedPlayerManager and persist across platform view disposal
         // This ensures PiP delegate callbacks continue to work when navigating between screens
         // Resources will be disposed when controller.dispose() is called from Dart
-        if controllerId != nil && !isDartFullscreenView {
-        } else if controllerId != nil && isDartFullscreenView {
-        } else {
-        }
     }
 
     // MARK: - App Lifecycle Handling
@@ -786,6 +763,7 @@ import QuartzCore
         do {
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
+            NSLog("[VideoPlayer] Audio session error: \(error.localizedDescription)")
         }
 
         // Check if this view owns the remote commands
@@ -854,6 +832,7 @@ import QuartzCore
             do {
                 try AVAudioSession.sharedInstance().setActive(true)
             } catch {
+                NSLog("[VideoPlayer] Audio session error: \(error.localizedDescription)")
             }
 
             // Restore Now Playing info and resume playback if needed
@@ -872,10 +851,16 @@ import QuartzCore
                         // Resume if the system recommends it, or if we were
                         // playing when the interruption started.
                         if shouldResume || self.wasPlayingBeforeInterruption {
-                            // Use seekToLiveEdgeAndPlay for live streams so the
-                            // player snaps back to the live edge instead of
-                            // resuming at a stale position behind the DVR window.
-                            self.seekToLiveEdgeAndPlay()
+                            if self.isPipCurrentlyActive {
+                                // During PiP, just resume — brief interruptions
+                                // (notification sounds) don't need a seek.
+                                self.player?.play()
+                            } else {
+                                // Use seekToLiveEdgeAndPlay for live streams so the
+                                // player snaps back to the live edge instead of
+                                // resuming at a stale position behind the DVR window.
+                                self.seekToLiveEdgeAndPlay()
+                            }
                         }
                     }
                 }

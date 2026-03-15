@@ -302,9 +302,23 @@ extension VideoPlayerView {
         }
 
         if let lastRange = item.seekableTimeRanges.last?.timeRangeValue {
+            // Seek to ~2s before the live edge to leave buffer headroom.
+            // Seeking to the exact end leaves zero buffer ahead, causing
+            // immediate re-buffering on any network fluctuation.
             let liveEdge = CMTimeRangeGetEnd(lastRange)
-            player.seek(to: liveEdge, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+            let buffer = CMTimeMake(value: 2, timescale: 1)
+            let target = CMTimeSubtract(liveEdge, buffer)
+            let seekTarget = CMTimeMaximum(target, lastRange.start)
+            player.seek(to: seekTarget, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
                 self?.player?.play()
+                self?.isRecoveringFromStall = false
+            }
+        } else if isPipCurrentlyActive {
+            // During PiP, don't replace the AVPlayerItem — item replacement
+            // can cause PiP to close. Just try to resume playback and let
+            // the existing item recover.
+            player.play()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 self?.isRecoveringFromStall = false
             }
         } else {

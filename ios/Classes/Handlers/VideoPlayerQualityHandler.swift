@@ -7,6 +7,9 @@ class VideoPlayerQualityHandler {
             guard let data = data,
                   let playlist = String(data: data, encoding: .utf8)
             else {
+                if let error = error {
+                    NSLog("[VideoPlayer] HLS quality fetch failed: \(error.localizedDescription)")
+                }
                 completion([])
                 return
             }

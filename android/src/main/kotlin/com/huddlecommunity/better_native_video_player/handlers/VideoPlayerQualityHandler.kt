@@ -3,6 +3,7 @@ package com.huddlecommunity.better_native_video_player.handlers
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
 import java.net.URL
 import kotlin.math.roundToInt
 
@@ -26,9 +27,12 @@ object VideoPlayerQualityHandler {
      * @return List of quality maps with metadata
      */
     suspend fun fetchHLSQualities(url: String): List<Map<String, Any>> = withContext(Dispatchers.IO) {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 10_000
+            readTimeout = 10_000
+        }
         try {
-            val connection = URL(url).openConnection()
-            val playlist = connection.getInputStream().bufferedReader().use { it.readText() }
+            val playlist = connection.inputStream.bufferedReader().use { it.readText() }
 
             val qualities = mutableListOf<QualityLevel>()
             val lines = playlist.lines()
@@ -126,6 +130,8 @@ object VideoPlayerQualityHandler {
         } catch (e: Exception) {
             Log.e(TAG, "Error fetching HLS qualities: ${e.message}", e)
             emptyList()
+        } finally {
+            connection.disconnect()
         }
     }
 }

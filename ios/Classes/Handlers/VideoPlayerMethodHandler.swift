@@ -427,8 +427,14 @@ extension VideoPlayerView {
             result(nil)
             return
         }
+        // Seek to ~2s before the live edge to leave buffer headroom.
+        // Seeking to the exact end leaves zero buffer ahead, causing
+        // immediate re-buffering on any network fluctuation.
         let liveEdge = CMTimeRangeGetEnd(lastRange)
-        player?.seek(to: liveEdge, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
+        let buffer = CMTimeMake(value: 2, timescale: 1)
+        let target = CMTimeSubtract(liveEdge, buffer)
+        let seekTarget = CMTimeMaximum(target, lastRange.start)
+        player?.seek(to: seekTarget, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
             result(nil)
         }
     }

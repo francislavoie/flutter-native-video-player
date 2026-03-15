@@ -277,9 +277,7 @@ class SharedPlayerManager: NSObject {
         }
 
         // Remove all views for this controller
-        let viewCountBefore = videoPlayerViews.count
         videoPlayerViews = videoPlayerViews.filter { $0.value.view?.controllerId != controllerId }
-        let viewCountAfter = videoPlayerViews.count
 
         // Clear primary view tracking
         primaryViewIdForController.removeValue(forKey: controllerId)
@@ -429,7 +427,7 @@ class SharedPlayerManager: NSObject {
         videoPlayerViews = videoPlayerViews.filter { $0.value.view != nil }
 
         // Find another view with the same controller
-        for (viewKey, wrapper) in videoPlayerViews {
+        for (_, wrapper) in videoPlayerViews {
             if let view = wrapper.view,
                view.controllerId == controllerId,
                view.viewId != excludedViewId {
@@ -530,11 +528,6 @@ class SharedPlayerManager: NSObject {
         // Clean up nil/deallocated views first
         videoPlayerViews = videoPlayerViews.filter { $0.value.view != nil }
         
-        for (key, wrapper) in videoPlayerViews {
-            if let view = wrapper.view {
-            }
-        }
-        
         if enabled {
             // Check if manual PiP is active for this controller
             if isManualPiPActive(controllerId) {
@@ -544,13 +537,9 @@ class SharedPlayerManager: NSObject {
             // Disable automatic PiP on all other controllers first
             if let previousControllerId = controllerWithAutomaticPiP, previousControllerId != controllerId {
                 // Disable on ALL platform views for the previous controller
-                var disabledCount = 0
-                for (viewKey, wrapper) in videoPlayerViews {
+                for (_, wrapper) in videoPlayerViews {
                     if let view = wrapper.view, view.controllerId == previousControllerId {
-                        let wasBefore = view.playerViewController.canStartPictureInPictureAutomaticallyFromInline
                         view.playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
-                        let isAfter = view.playerViewController.canStartPictureInPictureAutomaticallyFromInline
-                        disabledCount += 1
                     }
                 }
             }
@@ -558,39 +547,31 @@ class SharedPlayerManager: NSObject {
             // Find the PRIMARY (most recently played) platform view for this controller
             
             // First, disable ALL views for this controller
-            for (viewKey, wrapper) in videoPlayerViews {
+            for (_, wrapper) in videoPlayerViews {
                 if let view = wrapper.view, view.controllerId == controllerId {
                     view.playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
                 }
             }
-            
+
             // Then enable ONLY the primary view (the one that most recently called play)
             var enabledOnView = false
             if let primaryViewId = primaryViewIdForController[controllerId] {
                 let key = "\(primaryViewId)"
                 if let wrapper = videoPlayerViews[key], let view = wrapper.view {
-
                     if view.canStartPictureInPictureAutomatically {
-                        let wasBefore = view.playerViewController.canStartPictureInPictureAutomaticallyFromInline
                         view.playerViewController.canStartPictureInPictureAutomaticallyFromInline = true
-                        let isAfter = view.playerViewController.canStartPictureInPictureAutomaticallyFromInline
                         enabledOnView = true
-                    } else {
                     }
-                } else {
                 }
-            } else {
             }
 
             // FALLBACK: If no primary view was found or it was disposed, pick ANY view for this controller
             // This handles the case where the primary view was disposed but other views still exist
             if !enabledOnView {
-                for (viewKey, wrapper) in videoPlayerViews {
+                for (_, wrapper) in videoPlayerViews {
                     if let view = wrapper.view, view.controllerId == controllerId {
                         if view.canStartPictureInPictureAutomatically {
-                            let wasBefore = view.playerViewController.canStartPictureInPictureAutomaticallyFromInline
                             view.playerViewController.canStartPictureInPictureAutomaticallyFromInline = true
-                            let isAfter = view.playerViewController.canStartPictureInPictureAutomaticallyFromInline
                             // Set this as the new primary view
                             primaryViewIdForController[controllerId] = view.viewId
                             enabledOnView = true
@@ -598,25 +579,17 @@ class SharedPlayerManager: NSObject {
                         }
                     }
                 }
-
-                if !enabledOnView {
-                }
             }
 
             // Only set controllerWithAutomaticPiP if we actually enabled a view
             if enabledOnView {
                 controllerWithAutomaticPiP = controllerId
-            } else {
             }
         } else {
             // Disable automatic PiP for ALL platform views of the specified controller
-            var disabledCount = 0
-            for (viewKey, wrapper) in videoPlayerViews {
+            for (_, wrapper) in videoPlayerViews {
                 if let view = wrapper.view, view.controllerId == controllerId {
-                    let wasBefore = view.playerViewController.canStartPictureInPictureAutomaticallyFromInline
                     view.playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
-                    let isAfter = view.playerViewController.canStartPictureInPictureAutomaticallyFromInline
-                    disabledCount += 1
                 }
             }
             
