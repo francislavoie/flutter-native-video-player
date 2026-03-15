@@ -1,6 +1,6 @@
 name: better_native_video_player
 description: Native video player using AVPlayerViewController (iOS) and ExoPlayer (Android) with HLS, Picture-in-Picture, AirPlay, and fullscreen support.
-version: 0.2.3
+version: 0.4.11
 homepage: https://github.com/DaniKemper010/native-video-player
 repository: https://github.com/DaniKemper010/native-video-player.git
 issue_tracker: https://github.com/DaniKemper010/native-video-player/issues
@@ -12,11 +12,13 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  dismissible_page: ^1.0.2
+  floating: ^6.0.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: 6.0.0
+  flutter_lints: ^6.0.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

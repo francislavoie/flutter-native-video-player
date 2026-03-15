@@ -2,6 +2,7 @@ import Flutter
 import UIKit
 import AVKit
 import AVFoundation
+import MediaPlayer
 import QuartzCore
 
 // MARK: - Main Video Player View
@@ -14,12 +15,39 @@ import QuartzCore
     var eventSink: FlutterEventSink?
     var availableQualities: [[String: Any]] = []
     var qualityLevels: [VideoPlayer.QualityLevel] = []
-    var isAutoQuality = false
-    var lastBitrateCheck: TimeInterval = 0
-    let bitrateCheckInterval: TimeInterval = 5.0 // Check every 5 seconds
     var controllerId: Int?
     var pipController: AVPictureInPictureController?
-    
+
+    // Track if PiP is currently active (for both automatic and manual PiP)
+    var isPipCurrentlyActive: Bool = false
+
+    // Track if we've already registered remote command handlers
+    // This prevents re-registering and clearing targets unnecessarily
+    var hasRegisteredRemoteCommands: Bool = false
+
+    /// Force re-registration of remote commands
+    /// Call this when you know the targets might have been removed externally
+    func forceReregisterRemoteCommands() {
+
+        // Only force re-registration if we don't already own the commands
+        // or if the commands aren't properly set up
+        let commandCenter = MPRemoteCommandCenter.shared()
+        let hasTargets = commandCenter.playCommand.isEnabled && commandCenter.pauseCommand.isEnabled
+
+        if RemoteCommandManager.shared.isOwner(viewId) && hasTargets {
+            // Just restore Now Playing info without touching remote commands
+            if let mediaInfo = currentMediaInfo {
+                setupNowPlayingInfo(mediaInfo: mediaInfo)
+            }
+            return
+        }
+
+        hasRegisteredRemoteCommands = false
+        if let mediaInfo = currentMediaInfo {
+            setupNowPlayingInfo(mediaInfo: mediaInfo)
+        }
+    }
+
     // Store the platform view ID for registration
     var viewId: Int64 = 0
     
@@ -29,9 +57,20 @@ import QuartzCore
     // Separate player view controller for fullscreen (prevents removing embedded view)
     var fullscreenPlayerViewController: AVPlayerViewController?
 
+    // When true, this platform view is the Dart fullscreen host and uses its own AVPlayerViewController
+    // (same AVPlayer) so the inline view never loses its shared view. Cleared in deinit.
+    var isDartFullscreenView: Bool = false
+
     // Store media info for Now Playing
     var currentMediaInfo: [String: Any]?
     var timeObserver: Any?
+
+    // Cached artwork to avoid race conditions — the async artwork load
+    // reads the CURRENT nowPlayingInfo on completion instead of capturing
+    // a stale snapshot, and this cache lets subsequent setupNowPlayingInfo
+    // calls include artwork immediately if the URL hasn't changed.
+    var cachedArtwork: MPMediaItemArtwork?
+    var cachedArtworkUrl: String?
 
     // Track if this is a shared player (to avoid sending duplicate initialization events)
     var isSharedPlayer: Bool = false
@@ -42,13 +81,36 @@ import QuartzCore
     // Store desired playback speed
     var desiredPlaybackSpeed: Float = 1.0
 
+    // Store HDR setting
+    var enableHDR: Bool = false
+
+    // Store looping setting
+    var enableLooping: Bool = false
+
+    // Track if app is in background to keep audio playing on screen lock
+    var isInBackground: Bool = false
+    var lastKnownRate: Float = 0.0
+    
+    // DRM handler for protected content
+    var drmHandler: VideoPlayerDrmHandler?
+
+    // Re-entrancy guard for seekToLiveEdgeAndPlay to prevent overlapping seeks
+    var isRecoveringFromStall: Bool = false
+
+    // Track whether player-level KVO observers have been added
+    // Prevents duplicate observers when addObservers is called multiple times (e.g., on re-load)
+    var hasPlayerObservers: Bool = false
+
+    // Track whether playback was active before an audio session interruption
+    // so we can decide whether to resume after the interruption ends.
+    var wasPlayingBeforeInterruption: Bool = false
+
     public init(
         frame: CGRect,
         viewIdentifier viewId: Int64,
         arguments args: Any?,
         binaryMessenger messenger: FlutterBinaryMessenger
     ) {
-        print("Creating VideoPlayerView with id: \(viewId)")
         self.viewId = viewId
         channelName = "native_video_player_\(viewId)"
         methodChannel = FlutterMethodChannel(
@@ -56,107 +118,167 @@ import QuartzCore
             binaryMessenger: messenger
         )
 
-        // Always create a new AVPlayerViewController for each platform view
-        playerViewController = AVPlayerViewController()
+        // Extract controller ID from args to get shared player and view controller
+        let argsDict = args as? [String: Any]
+        let isDartFullscreen = argsDict?["isDartFullscreen"] as? Bool ?? false
 
-        // Extract controller ID from args to get shared player
-        if let args = args as? [String: Any],
+        if let args = argsDict,
            let controllerIdValue = args["controllerId"] as? Int {
             controllerId = controllerIdValue
 
-            // Get or create shared player (but new view controller each time)
-            let (sharedPlayer, alreadyExisted) = SharedPlayerManager.shared.getOrCreatePlayer(for: controllerIdValue)
+            // Get or create shared player AND view controller
+            // This ensures the view controller persists across platform view disposal
+            // so PiP delegate callbacks continue to work even when navigating away
+            let (sharedPlayer, sharedViewController, alreadyExisted) =
+                SharedPlayerManager.shared.getOrCreatePlayerAndViewController(for: controllerIdValue)
+
             player = sharedPlayer
             isSharedPlayer = alreadyExisted
 
-            if alreadyExisted {
-                print("Using existing shared player for controller ID: \(controllerIdValue)")
+            if isDartFullscreen {
+                // Dart fullscreen host: use a dedicated AVPlayerViewController (same player) so the inline
+                // view never loses its shared view when this platform view is created or disposed.
+                let dedicatedVC = AVPlayerViewController()
+                dedicatedVC.player = sharedPlayer
+                playerViewController = dedicatedVC
+                isDartFullscreenView = true
             } else {
-                print("Creating new shared player for controller ID: \(controllerIdValue)")
+                if alreadyExisted {
+                    // Second or later platform view for this controller (e.g. detail screen).
+                    // Use a dedicated AVPlayerViewController with the shared player so this
+                    // view has its own layer; the shared VC stays in SharedPlayerManager for PiP.
+                    // This avoids black screen when navigating list↔detail (one UIView per slot).
+                    let displayVC = AVPlayerViewController()
+                    displayVC.player = sharedPlayer
+                    playerViewController = displayVC
+                } else {
+                    playerViewController = sharedViewController
+                }
             }
         } else {
             // Fallback: create new instances if no controller ID provided
-            print("No controller ID provided, creating new player")
+            playerViewController = AVPlayerViewController()
             player = AVPlayer()
+
+            if #available(iOS 15.0, *) {
+                player?.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
+            }
+
+            // Assign player to view controller
+            playerViewController.player = player
         }
 
         super.init()
-
-        // Assign the shared player to this new view controller
-        playerViewController.player = player
 
         // Configure playback controls
         let showControls = (args as? [String: Any])?["showNativeControls"] as? Bool ?? true
         playerViewController.showsPlaybackControls = showControls
         playerViewController.delegate = self
+        playerViewController.view.backgroundColor = .black
 
         // Disable automatic Now Playing updates - we'll handle it manually
         playerViewController.updatesNowPlayingInfoCenter = false
 
+        // Disable Live Text analysis to prevent KVO crashes from Apple's
+        // internal AVVideoFrameVisualAnalyzer during player item replacement
+        if #available(iOS 16.0, *) {
+            playerViewController.allowsVideoFrameAnalysis = false
+        }
+
         // Extract configuration from Flutter args
         if let args = args as? [String: Any] {
-            // PiP configuration
-            let allowsPiP = args["allowsPictureInPicture"] as? Bool ?? true
-            let canStartAutomatically = args["canStartPictureInPictureAutomatically"] as? Bool ?? true
-            
-            // Store the automatic PiP preference
-            self.canStartPictureInPictureAutomatically = canStartAutomatically
+            // PiP configuration from args
+            let argsAllowsPiP = args["allowsPictureInPicture"] as? Bool ?? true
+            let argsCanStartAutomatically = args["canStartPictureInPictureAutomatically"] as? Bool ?? true
+            let argsShowNativeControls = args["showNativeControls"] as? Bool ?? true
 
-            playerViewController.allowsPictureInPicturePlayback = allowsPiP
+            // HDR configuration from args
+            enableHDR = args["enableHDR"] as? Bool ?? false
+
+            // Looping configuration from args
+            enableLooping = args["enableLooping"] as? Bool ?? false
+
+            // For shared players, try to get PiP settings from SharedPlayerManager
+            // This ensures PiP settings persist across all views using the same controller
+            if let controllerIdValue = controllerId {
+                if let sharedSettings = SharedPlayerManager.shared.getPipSettings(for: controllerIdValue) {
+                    // Use existing shared settings
+                    self.canStartPictureInPictureAutomatically = sharedSettings.canStartPictureInPictureAutomatically
+                    playerViewController.allowsPictureInPicturePlayback = sharedSettings.allowsPictureInPicture
+                } else {
+                    // First view for this controller - store the settings
+                    self.canStartPictureInPictureAutomatically = argsCanStartAutomatically
+                    playerViewController.allowsPictureInPicturePlayback = argsAllowsPiP
+                    SharedPlayerManager.shared.setPipSettings(
+                        for: controllerIdValue,
+                        allowsPictureInPicture: argsAllowsPiP,
+                        canStartPictureInPictureAutomatically: argsCanStartAutomatically,
+                        showNativeControls: argsShowNativeControls
+                    )
+                }
+            } else {
+                // Non-shared player - use settings from args
+                self.canStartPictureInPictureAutomatically = argsCanStartAutomatically
+                playerViewController.allowsPictureInPicturePlayback = argsAllowsPiP
+            }
+
             if #available(iOS 14.2, *) {
                 // Start with automatic PiP DISABLED
                 // It will be enabled when this specific player starts playing (if allowed)
                 // This prevents conflicts when multiple players exist
                 playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
-                print("✅ PiP configured: allowsPiP=\(allowsPiP), canStartAutomatically=\(canStartAutomatically)")
             } else {
-                print("⚠️ Automatic PiP requires iOS 14.2+, current device doesn't support it")
             }
 
             // Store media info if provided during initialization
             // This ensures we have the correct media info even for shared players
             if let mediaInfo = args["mediaInfo"] as? [String: Any] {
                 currentMediaInfo = mediaInfo
-                print("📱 Stored media info during init: \(mediaInfo["title"] ?? "Unknown")")
+
+                // Also store in SharedPlayerManager to persist across view recreations
+                if let controllerIdValue = controllerId {
+                    SharedPlayerManager.shared.setMediaInfo(for: controllerIdValue, mediaInfo: mediaInfo)
+                }
             }
         }
         
         // Register this view with the SharedPlayerManager
         if let controllerIdValue = controllerId {
             SharedPlayerManager.shared.registerVideoPlayerView(self, viewId: viewId)
-            print("✅ Registered VideoPlayerView for controller \(controllerIdValue), viewId: \(viewId)")
-            
-            // If this controller is currently the one with automatic PiP enabled,
-            // enable automatic PiP on this NEW view controller immediately
+
+            // Setup controller-level event channel (if not already set up)
+            // This enables persistent event delivery for PiP and AirPlay
+            NativeVideoPlayerPlugin.setupControllerEventChannel(for: controllerIdValue)
+
+            // If this controller is currently the one with automatic PiP enabled OR if the player is playing,
+            // this new view should become the primary view and get automatic PiP
+            // BUT ONLY if manual PiP is not active
             if #available(iOS 14.2, *) {
-                if SharedPlayerManager.shared.isControllerActiveForAutoPiP(controllerIdValue) {
-                    print("🎬 This controller is currently active for auto PiP")
+                let isActiveForAutoPiP = SharedPlayerManager.shared.isControllerActiveForAutoPiP(controllerIdValue)
+                let isPlaying = player?.rate ?? 0 > 0
+
+                if isActiveForAutoPiP || isPlaying {
                     if canStartPictureInPictureAutomatically {
-                        playerViewController.canStartPictureInPictureAutomaticallyFromInline = true
-                        print("   → Enabled automatic PiP on new platform view (viewId: \(viewId))")
+                        // Check if manual PiP is active - if so, skip re-enabling automatic PiP
+                        if SharedPlayerManager.shared.isManualPiPActive(controllerIdValue) {
+                        } else {
+                            // Set this new view as the primary view
+                            SharedPlayerManager.shared.setPrimaryView(viewId, for: controllerIdValue)
+                            // Re-apply automatic PiP settings to enable it on this new view
+                            SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
+                        }
+                    } else {
                     }
                 }
             }
         }
 
-        // Background audio setup - required for automatic PiP
-        do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
-            print("✅ AVAudioSession configured for playback")
-        } catch {
-            print("❌ Failed to configure AVAudioSession: \(error.localizedDescription)")
-        }
-        try? AVAudioSession.sharedInstance().setActive(true)
-
-        print("Setting up method channel: \(channelName)")
         // Set up method call handler
-        print("Setting method handler for channel: \(channelName)")
         methodChannel.setMethodCallHandler({ [weak self] (call: FlutterMethodCall, result: @escaping FlutterResult) in
             guard let self = self else {
                 result(FlutterError(code: "DISPOSED", message: "VideoPlayerView was disposed", details: nil))
                 return
             }
-            print("[\(self.channelName)] Received method call: \(call.method)")
             self.handleMethodCall(call: call, result: result)
         })
         
@@ -175,6 +297,22 @@ import QuartzCore
             setupPeriodicTimeObserver()
         }
 
+        // Observe app entering foreground to restore Now Playing info
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppWillEnterForeground),
+            name: UIApplication.willEnterForegroundNotification,
+            object: nil
+        )
+
+        // Observe audio session interruptions
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAudioSessionInterruption),
+            name: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+
         // Set up AirPlay route detector (iOS 11.0+)
         if #available(iOS 11.0, *) {
             setupAirPlayRouteDetector()
@@ -185,8 +323,19 @@ import QuartzCore
         return playerViewController.view
     }
 
+    // MARK: - Audio Session Management
+
+    /// Prepares and activates the audio session for video playback
+    /// This MUST be called before starting playback to ensure audio continues when screen locks
+    func prepareAudioSession() {
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
+            try AVAudioSession.sharedInstance().setActive(true, options: [])
+        } catch {
+        }
+    }
+
     public func handleMethodCall(call: FlutterMethodCall, result: @escaping FlutterResult) {
-        print("Handling method call: \(call.method) on channel: \(channelName)")
         switch call.method {
         case "load":
             handleLoad(call: call, result: result)
@@ -200,10 +349,29 @@ import QuartzCore
             handleSetVolume(call: call, result: result)
         case "setSpeed":
             handleSetSpeed(call: call, result: result)
+        case "setLooping":
+            handleSetLooping(call: call, result: result)
         case "setQuality":
             handleSetQuality(call: call, result: result)
         case "getAvailableQualities":
-            result(availableQualities)
+            // First check if we have qualities in this view instance
+            if !availableQualities.isEmpty {
+                result(availableQualities)
+            } else if let controllerIdValue = controllerId,
+                      let cachedQualities = SharedPlayerManager.shared.getQualities(for: controllerIdValue) {
+                // If view instance is empty but cache has qualities, restore them
+                availableQualities = cachedQualities
+                if let cachedQualityLevels = SharedPlayerManager.shared.getQualityLevels(for: controllerIdValue) {
+                    qualityLevels = cachedQualityLevels
+                }
+                result(cachedQualities)
+            } else {
+                result(availableQualities)
+            }
+        case "getAvailableSubtitleTracks":
+            handleGetAvailableSubtitleTracks(result: result)
+        case "setSubtitleTrack":
+            handleSetSubtitleTrack(call: call, result: result)
         case "enterFullScreen":
             handleEnterFullScreen(result: result)
         case "exitFullScreen":
@@ -214,12 +382,33 @@ import QuartzCore
             handleEnterPictureInPicture(result: result)
         case "exitPictureInPicture":
             handleExitPictureInPicture(result: result)
+        case "enableAutomaticInlinePip":
+            handleEnableAutomaticInlinePip(result: result)
+        case "disableAutomaticInlinePip":
+            handleDisableAutomaticInlinePip(result: result)
         case "setShowNativeControls":
             handleSetShowNativeControls(call: call, result: result)
+        case "setMediaInfo":
+            handleSetMediaInfo(call: call, result: result)
+        case "ensureSurfaceConnected":
+            // No-op on iOS; each platform view uses its own AVPlayerViewController when shared.
+            result(nil)
         case "isAirPlayAvailable":
             handleIsAirPlayAvailable(result: result)
         case "showAirPlayPicker":
             handleShowAirPlayPicker(result: result)
+        case "disconnectAirPlay":
+            handleDisconnectAirPlay(result: result)
+        case "startAirPlayDetection":
+            handleStartAirPlayDetection(result: result)
+        case "stopAirPlayDetection":
+            handleStopAirPlayDetection(result: result)
+        case "configureForLivePlayback":
+            handleConfigureForLivePlayback(call: call, result: result)
+        case "getLatencyToLive":
+            handleGetLatencyToLive(result: result)
+        case "seekToLiveEdge":
+            handleSeekToLiveEdge(result: result)
         case "dispose":
             handleDispose(result: result)
         default:
@@ -234,41 +423,150 @@ import QuartzCore
                 new
             }
         }
-        eventSink?(event)
+        DispatchQueue.main.async {
+            self.eventSink?(event)
+        }
+    }
+
+    /// Cleans up remote command ownership, attempting to transfer to another view if possible
+    /// This is called from both deinit and handleDispose to avoid duplication
+    func cleanupRemoteCommandOwnership() {
+        // Only proceed if this view owns the remote commands
+        guard RemoteCommandManager.shared.isOwner(viewId) else {
+            return
+        }
+
+
+        // Try to transfer ownership to another view with the same controller
+        var ownershipTransferred = false
+        if let controllerIdValue = controllerId,
+           let alternativeView = SharedPlayerManager.shared.findAnotherViewForController(controllerIdValue, excluding: viewId) {
+
+            // Transfer ownership by setting up Now Playing info on the alternative view
+            var mediaInfo = alternativeView.currentMediaInfo
+
+            // Fallback: Try to get media info from SharedPlayerManager
+            if mediaInfo == nil {
+                mediaInfo = SharedPlayerManager.shared.getMediaInfo(for: controllerIdValue)
+                if mediaInfo != nil {
+                    alternativeView.currentMediaInfo = mediaInfo
+                }
+            }
+
+            if let mediaInfo = mediaInfo {
+                alternativeView.setupNowPlayingInfo(mediaInfo: mediaInfo)
+                ownershipTransferred = true
+            } else {
+            }
+        }
+
+        // CRITICAL: If no transfer was possible BUT PiP is active, DO NOT clear Now Playing info
+        // PiP needs the media controls to work, so we must preserve them
+        if !ownershipTransferred {
+            let isPipActiveForController = controllerId.flatMap { SharedPlayerManager.shared.isPipActiveForController($0) } ?? false
+
+            if isPipCurrentlyActive || isPipActiveForController {
+                // Just clear the ownership flag, but keep the Now Playing info and remote commands active
+                RemoteCommandManager.shared.clearOwner(viewId)
+            } else {
+                RemoteCommandManager.shared.clearOwner(viewId)
+                RemoteCommandManager.shared.removeAllTargets()
+                MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            }
+        }
+    }
+
+    /// Emits all current player states to ensure UI is in sync
+    /// This is useful after events like exiting PiP where the UI needs to refresh
+    public func emitCurrentState() {
+        guard let player = player, let currentItem = player.currentItem else {
+            return
+        }
+
+
+        // Emit current time and duration
+        let currentTimeSeconds = CMTimeGetSeconds(player.currentTime())
+        let durationSeconds = CMTimeGetSeconds(currentItem.duration)
+
+        if !currentTimeSeconds.isNaN && !durationSeconds.isNaN && durationSeconds > 0 {
+            let duration = Int(durationSeconds * 1000)
+            let position = Int(currentTimeSeconds * 1000)
+
+            // Get buffered position
+            var bufferedSeconds = 0.0
+            let timeRanges = currentItem.loadedTimeRanges
+            if !timeRanges.isEmpty {
+                let bufferedRange = timeRanges.last!.timeRangeValue
+                let bufferedEnd = CMTimeAdd(bufferedRange.start, bufferedRange.duration)
+                bufferedSeconds = CMTimeGetSeconds(bufferedEnd)
+            }
+            let bufferedPosition = Int(bufferedSeconds * 1000)
+
+            sendEvent("timeUpdate", data: [
+                "position": position,
+                "duration": duration,
+                "bufferedPosition": bufferedPosition,
+                "isBuffering": player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+            ])
+        }
+
+        // Emit current playback state
+        switch player.timeControlStatus {
+        case .playing:
+            sendEvent("play")
+        case .paused:
+            sendEvent("pause")
+        case .waitingToPlayAtSpecifiedRate:
+            sendEvent("buffering")
+        @unknown default:
+            break
+        }
+
+        // Emit current PiP state
+        let isPipActive = isPipCurrentlyActive ||
+                          (controllerId.flatMap { SharedPlayerManager.shared.isPipActiveForController($0) } ?? false)
+
+        if isPipActive {
+            sendEvent("pipStart", data: ["isPictureInPicture": true])
+        } else {
+            sendEvent("pipStop", data: ["isPictureInPicture": false])
+        }
     }
 
     // MARK: - FlutterStreamHandler
     public func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
-        print("[\(channelName)] Event channel listener attached")
         self.eventSink = events
 
         // Send initial state event when listener is attached
         if isSharedPlayer {
             // For shared players, only send current playback state and position
             if let player = player, let currentItem = player.currentItem {
-                // Send current position
-                let duration = Int(CMTimeGetSeconds(currentItem.duration) * 1000)
-                let position = Int(CMTimeGetSeconds(player.currentTime()) * 1000)
-                sendEvent("timeUpdated", data: ["position": position, "duration": duration])
+                let currentTimeSeconds = CMTimeGetSeconds(player.currentTime())
+                let durationSeconds = CMTimeGetSeconds(currentItem.duration)
+
+                // Check for NaN or invalid times
+                if currentTimeSeconds.isNaN || durationSeconds.isNaN {
+                } else {
+                    let duration = Int(durationSeconds * 1000)
+                    let position = Int(currentTimeSeconds * 1000)
+                    sendEvent("timeUpdated", data: ["position": position, "duration": duration])
+                }
 
                 // Send current playback state
                 switch player.timeControlStatus {
                 case .playing:
-                    print("[\(channelName)] Sending play event to new listener")
                     sendEvent("play")
                 case .paused:
-                    print("[\(channelName)] Sending pause event to new listener")
                     sendEvent("pause")
                 case .waitingToPlayAtSpecifiedRate:
-                    print("[\(channelName)] Sending buffering event to new listener")
                     sendEvent("buffering")
                 @unknown default:
                     break
                 }
             }
+
         } else {
             // For new players, send isInitialized event
-            print("[\(channelName)] Sending isInitialized event to new listener")
             sendEvent("isInitialized")
         }
 
@@ -276,25 +574,128 @@ import QuartzCore
         if #available(iOS 11.0, *) {
             if let detector = routeDetector {
                 let isAvailable = detector.multipleRoutesDetected
-                print("[\(channelName)] Sending initial AirPlay availability: \(isAvailable)")
                 sendEvent("airPlayAvailabilityChanged", data: ["isAvailable": isAvailable])
             }
+        }
+
+        // Send initial AirPlay connection state
+        // Check at system level (audio route) rather than just this player's state
+        // This ensures we detect if ANY player in the app is using AirPlay
+        let deviceName = getAirPlayDeviceName()
+        let isSystemAirPlayActive = deviceName != nil
+
+        if let player = player {
+            // Check if THIS specific player is using AirPlay
+            let isPlayerAirPlayActive = player.isExternalPlaybackActive
+
+            // We're connected if either:
+            // 1. This player is actively using AirPlay, OR
+            // 2. AirPlay device is detected in audio route (another player might be using it)
+            let isConnected = isPlayerAirPlayActive || isSystemAirPlayActive
+
+            if isConnected {
+
+                var eventData: [String: Any] = ["isConnected": true, "isConnecting": false]
+                if let deviceName = deviceName {
+                    eventData["deviceName"] = deviceName
+                }
+                sendEvent("airPlayConnectionChanged", data: eventData)
+
+                // If device name is not available yet, start retry sequence
+                if deviceName == nil {
+                    retryGetAirPlayDeviceName(attempt: 1, maxAttempts: 4)
+                }
+            } else {
+                // Not connected at system or player level
+                sendEvent("airPlayConnectionChanged", data: ["isConnected": false, "isConnecting": false])
+            }
+        }
+
+        // Send initial PiP state
+        // Check if PiP is currently active on this view or any view for the same controller
+        let isPipActive = isPipCurrentlyActive ||
+                          (controllerId.flatMap { SharedPlayerManager.shared.isPipActiveForController($0) } ?? false)
+
+        if isPipActive {
+            sendEvent("pipStart", data: ["isPictureInPicture": true])
+        } else {
+            // Send pipStop to ensure Flutter knows PiP is not active
+            sendEvent("pipStop", data: ["isPictureInPicture": false])
         }
 
         return nil
     }
 
     public func onCancel(withArguments arguments: Any?) -> FlutterError? {
-        print("[\(channelName)] Event channel listener detached")
         self.eventSink = nil
         return nil
     }
 
     deinit {
-        print("VideoPlayerView deinit for channel: \(channelName), viewId: \(viewId)")
-        
-        // Unregister this view from SharedPlayerManager
-        SharedPlayerManager.shared.unregisterVideoPlayerView(viewId: viewId)
+
+        // Use the isPipCurrentlyActive flag to check if PiP is active
+        let isPipActiveNow = isPipCurrentlyActive
+
+        // ALWAYS emit PiP state on disposal to ensure Flutter side is synchronized
+        // This is important for state management even if PiP is not active
+        if isPipActiveNow {
+        } else {
+        }
+
+        // Always send pipStop event - either from this view or an alternative
+        if eventSink != nil {
+            // This view still has a listener, send from here
+            sendEvent("pipStop", data: ["isPictureInPicture": false])
+        } else if let controllerIdValue = controllerId,
+                  let alternativeView = SharedPlayerManager.shared.findAnotherViewForController(controllerIdValue, excluding: viewId),
+                  alternativeView.eventSink != nil {
+            // Send from alternative view if it exists and has a listener
+            alternativeView.sendEvent("pipStop", data: ["isPictureInPicture": false])
+        } else {
+        }
+
+        // Try to stop PiP gracefully if it was active
+        if isPipActiveNow {
+            if #available(iOS 14.0, *) {
+                if let pipCtrl = pipController, pipCtrl.isPictureInPictureActive {
+                    pipCtrl.stopPictureInPicture()
+                }
+            }
+        }
+
+        // Clean up remote command ownership (transfer to another view if possible)
+        cleanupRemoteCommandOwnership()
+
+        // Handle automatic PiP transfer for shared players
+        // If this was the primary view (the one with automatic PiP enabled) OR if the player is playing,
+        // we need to transfer automatic PiP to another view using the same controller
+        if #available(iOS 14.2, *), let controllerIdValue = controllerId {
+            let wasPrimaryView = SharedPlayerManager.shared.isPrimaryView(viewId, for: controllerIdValue)
+            let wasAutoEnabled = SharedPlayerManager.shared.isControllerActiveForAutoPiP(controllerIdValue)
+            let isPlaying = player?.rate ?? 0 > 0
+
+            // Transfer automatic PiP if:
+            // 1. This was the primary view AND auto PiP was enabled, OR
+            // 2. The player is currently playing (should maintain auto PiP capability)
+            if (wasPrimaryView && wasAutoEnabled) || isPlaying {
+
+                // Disable automatic PiP on this view before unregistering
+                playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
+
+                // Unregister this view first so it won't be found
+                SharedPlayerManager.shared.unregisterVideoPlayerView(viewId: viewId)
+
+                // Re-enable automatic PiP - this will find and enable a different view
+                // for the same controller (if any exists)
+                SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
+            } else {
+                // Normal unregister for non-primary views
+                SharedPlayerManager.shared.unregisterVideoPlayerView(viewId: viewId)
+            }
+        } else {
+            // Normal unregister for non-shared players
+            SharedPlayerManager.shared.unregisterVideoPlayerView(viewId: viewId)
+        }
 
         // Remove periodic time observer
         if let timeObserver = timeObserver {
@@ -305,9 +706,7 @@ import QuartzCore
         // Only remove observers, don't dispose the player if it's shared
         // The shared player will be kept alive for reuse
         if let item = player?.currentItem {
-            item.removeObserver(self, forKeyPath: "status")
-            item.removeObserver(self, forKeyPath: "playbackBufferEmpty")
-            item.removeObserver(self, forKeyPath: "playbackLikelyToKeepUp")
+            removeItemObservers(from: item)
         }
 
         // Remove player observer for timeControlStatus
@@ -326,9 +725,165 @@ import QuartzCore
         NotificationCenter.default.removeObserver(self)
         methodChannel.setMethodCallHandler(nil)
 
-        // Note: player and playerViewController are NOT disposed here
-        // They remain in SharedPlayerManager for reuse
-        print("Platform view disposed but player kept alive for controller ID: \(String(describing: controllerId))")
+        // Clean up DRM handler
+        drmHandler?.cleanup()
+        drmHandler = nil
+
+        // Clear current media info from this view
+        // BUT do NOT clear from SharedPlayerManager if PiP is active
+        // This ensures media controls survive view disposal during PiP
+        currentMediaInfo = nil
+        if !isPipActiveNow {
+            // Only clear from SharedPlayerManager if PiP is NOT active
+            if let controllerIdValue = controllerId {
+                // But first check if there are other views using this controller
+                let otherViews = SharedPlayerManager.shared.findAllViewsForController(controllerIdValue)
+                if otherViews.count <= 1 {
+                    // This is the last view, safe to clear media info
+                } else {
+                }
+            }
+        } else {
+        }
+
+        // Emit current state to all remaining views for this controller
+        // This ensures other views stay in sync when one view is disposed
+        if let controllerIdValue = controllerId {
+            let remainingViews = SharedPlayerManager.shared.findAllViewsForController(controllerIdValue)
+            if !remainingViews.isEmpty {
+                for view in remainingViews {
+                    // Skip the view being disposed (just in case it's still in the list)
+                    if view.viewId != viewId {
+                        view.emitCurrentState()
+                    }
+                }
+            }
+        }
+
+        // For Dart fullscreen platform view, release the dedicated VC's player so it tears down.
+        // The shared player and shared VC (inline view) are left untouched.
+        if isDartFullscreenView {
+            playerViewController.player = nil
+        }
+
+        // CRITICAL: For shared controllers, player and playerViewController are NOT disposed here
+        // They're managed by SharedPlayerManager and persist across platform view disposal
+        // This ensures PiP delegate callbacks continue to work when navigating between screens
+        // Resources will be disposed when controller.dispose() is called from Dart
+        if controllerId != nil && !isDartFullscreenView {
+        } else if controllerId != nil && isDartFullscreenView {
+        } else {
+        }
+    }
+
+    // MARK: - App Lifecycle Handling
+
+    /// Called when app returns to foreground
+    /// Restores Now Playing info which may have been cleared by the system
+    @objc func handleAppWillEnterForeground() {
+
+        // CRITICAL: Reactivate audio session first
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+        }
+
+        // Check if this view owns the remote commands
+        guard RemoteCommandManager.shared.isOwner(viewId) else {
+            return
+        }
+
+        // Check if we have media info to restore
+        var mediaInfo = currentMediaInfo
+
+        // Fallback: Try to retrieve from SharedPlayerManager if not available locally
+        if mediaInfo == nil, let controllerIdValue = controllerId {
+            mediaInfo = SharedPlayerManager.shared.getMediaInfo(for: controllerIdValue)
+            if mediaInfo != nil {
+                currentMediaInfo = mediaInfo // Update local copy
+            }
+        }
+
+        guard let mediaInfo = mediaInfo else {
+            return
+        }
+
+        // Delay slightly to ensure audio session is fully active
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self = self else { return }
+            // Restore Now Playing info
+            self.setupNowPlayingInfo(mediaInfo: mediaInfo)
+
+            // Also update the playback time to ensure controls show correct position
+            self.updateNowPlayingPlaybackTime()
+
+            // If the player stalled during background (waiting/buffering), seek
+            // to the live edge to recover instead of staying on stale segments.
+            if let player = self.player,
+               player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
+                self.seekToLiveEdgeAndPlay()
+            }
+        }
+    }
+
+    /// Called when audio session is interrupted (e.g., phone call, other app's audio)
+    @objc func handleAudioSessionInterruption(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+
+
+        switch type {
+        case .began:
+            // Track whether we were playing so we can resume correctly after
+            // the interruption ends (the system may not always set shouldResume).
+            wasPlayingBeforeInterruption = (player?.rate ?? 0) > 0
+        case .ended:
+            // Check if we should resume playback
+            var shouldResume = false
+            if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                if options.contains(.shouldResume) {
+                    shouldResume = true
+                }
+            }
+
+            // Reactivate audio session
+            do {
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+            }
+
+            // Restore Now Playing info and resume playback if needed
+            if RemoteCommandManager.shared.isOwner(viewId) {
+                var mediaInfo = currentMediaInfo
+                if mediaInfo == nil, let controllerIdValue = controllerId {
+                    mediaInfo = SharedPlayerManager.shared.getMediaInfo(for: controllerIdValue)
+                }
+
+                if let mediaInfo = mediaInfo {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                        guard let self = self else { return }
+                        self.setupNowPlayingInfo(mediaInfo: mediaInfo)
+                        self.updateNowPlayingPlaybackTime()
+
+                        // Resume if the system recommends it, or if we were
+                        // playing when the interruption started.
+                        if shouldResume || self.wasPlayingBeforeInterruption {
+                            // Use seekToLiveEdgeAndPlay for live streams so the
+                            // player snaps back to the live edge instead of
+                            // resuming at a stale position behind the DVR window.
+                            self.seekToLiveEdgeAndPlay()
+                        }
+                    }
+                }
+            }
+
+        @unknown default:
+            break
+        }
     }
 }
 

@@ -9,13 +9,16 @@ class NativeVideoPlayerQuality {
   });
 
   factory NativeVideoPlayerQuality.fromMap(Map<dynamic, dynamic> map) {
-    // Parse resolution from label if available (e.g., "1280x720")
-    int? width, height;
     final label = map['label'] as String;
-    final resolutionMatch = RegExp(r'(\d+)x(\d+)').firstMatch(label);
-    if (resolutionMatch != null) {
-      width = int.tryParse(resolutionMatch.group(1)!);
-      height = int.tryParse(resolutionMatch.group(2)!);
+    // Prefer explicit width/height from the map; fall back to parsing the label.
+    int? width = map['width'] as int?;
+    int? height = map['height'] as int?;
+    if (width == null || height == null) {
+      final resolutionMatch = RegExp(r'(\d+)x(\d+)').firstMatch(label);
+      if (resolutionMatch != null) {
+        width ??= int.tryParse(resolutionMatch.group(1)!);
+        height ??= int.tryParse(resolutionMatch.group(2)!);
+      }
     }
 
     return NativeVideoPlayerQuality(

@@ -9,7 +9,12 @@ class VideoDetailScreenFull extends StatefulWidget {
   final bool useCustomOverlay;
   final NativeVideoPlayerController? controller;
 
-  const VideoDetailScreenFull({super.key, required this.video, this.controller, this.useCustomOverlay = false});
+  const VideoDetailScreenFull({
+    super.key,
+    required this.video,
+    this.controller,
+    this.useCustomOverlay = false,
+  });
 
   @override
   State<VideoDetailScreenFull> createState() => _VideoDetailScreenFullState();
@@ -43,21 +48,16 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
       _controller.addControlListener(_handleControlEvent);
 
       // Do after frame to ensure widget is fully built
-      WidgetsBinding.instance.addPostFrameCallback((_) async {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
         // Get current state from controller immediately
         _updateStateFromController();
-        
-        // If video was playing in the list, resume playback after navigation
-        // This ensures automatic PiP can work from this screen
-        final wasPlaying = _controller.activityState.isPlaying;
-        debugPrint('🎬 Detail screen loaded, video was playing: $wasPlaying');
-        if (wasPlaying) {
-          debugPrint('🎬 Resuming playback in detail screen');
-          // Wait longer for the new platform view to be fully ready
-          await Future.delayed(const Duration(milliseconds: 500));
-          await _controller.play();
-          debugPrint('🎬 Playback resumed');
-        }
+
+        // Don't automatically resume playback - let the shared player continue in its current state
+        // The platform view will sync with the actual player state automatically
+        // Automatic play can cause race conditions with platform view initialization
+        debugPrint(
+          '🎬 Detail screen loaded, current state: ${_controller.activityState}',
+        );
       });
     } else {
       // Create a new controller
@@ -96,8 +96,11 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
   Future<void> _initializePlayer() async {
     _controller = NativeVideoPlayerController(
       id: widget.video.id,
-      autoPlay: false,
-      mediaInfo: NativeVideoPlayerMediaInfo(title: widget.video.title, subtitle: widget.video.description),
+      autoPlay: widget.video.autoPlay,
+      mediaInfo: NativeVideoPlayerMediaInfo(
+        title: widget.video.title,
+        subtitle: widget.video.description,
+      ),
     );
 
     _controller.addActivityListener(_handleActivityEvent);
@@ -185,7 +188,11 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
           }
           if (event.data!['qualities'] != null) {
             final newQualities = (event.data!['qualities'] as List)
-                .map((q) => NativeVideoPlayerQuality.fromMap(Map<String, dynamic>.from(q as Map)))
+                .map(
+                  (q) => NativeVideoPlayerQuality.fromMap(
+                    Map<String, dynamic>.from(q as Map),
+                  ),
+                )
                 .toList();
 
             _qualities = newQualities.toSet().toList();
@@ -221,19 +228,26 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
 
   Widget _buildPlayPauseButton() {
     // Show loading indicator when buffering or loading
-    if (state == PlayerActivityState.buffering || state == PlayerActivityState.loading) {
+    if (state == PlayerActivityState.buffering ||
+        state == PlayerActivityState.loading) {
       return const Center(
         child: SizedBox(
           width: 32,
           height: 32,
-          child: CircularProgressIndicator(strokeWidth: 3, valueColor: AlwaysStoppedAnimation<Color>(Colors.white)),
+          child: CircularProgressIndicator(
+            strokeWidth: 3,
+            valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+          ),
         ),
       );
     }
 
     // Show play/pause button for other states
     return IconButton(
-      icon: Icon(state.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white),
+      icon: Icon(
+        state.isPlaying ? Icons.pause : Icons.play_arrow,
+        color: Colors.white,
+      ),
       iconSize: 36,
       onPressed: () {
         if (state.isPlaying) {
@@ -251,7 +265,7 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
     _controller.removeControlListener(_handleControlEvent);
     // Only dispose if we created the controller
     if (_ownsController) {
-      _controller.dispose();
+      _controller.releaseResources();
     }
     super.dispose();
   }
@@ -293,7 +307,10 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
                               shape: BoxShape.circle,
                             ),
                             child: IconButton(
-                              icon: const Icon(Icons.arrow_back, color: Colors.white),
+                              icon: const Icon(
+                                Icons.arrow_back,
+                                color: Colors.white,
+                              ),
                               padding: EdgeInsets.zero,
                               onPressed: () => Navigator.pop(context),
                             ),
@@ -317,12 +334,20 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
                         children: [
                           Text(
                             widget.video.title,
-                            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87),
+                            style: const TextStyle(
+                              fontSize: 24,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black87,
+                            ),
                           ),
                           const SizedBox(height: 12),
                           Text(
                             widget.video.description,
-                            style: TextStyle(fontSize: 15, color: Colors.grey[700], height: 1.5),
+                            style: TextStyle(
+                              fontSize: 15,
+                              color: Colors.grey[700],
+                              height: 1.5,
+                            ),
                           ),
                         ],
                       ),
@@ -338,7 +363,11 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
                         children: [
                           const Text(
                             'Playback Controls',
-                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87),
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black87,
+                            ),
                           ),
                           const SizedBox(height: 16),
 
@@ -349,7 +378,10 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
                               IconButton(
                                 icon: const Icon(Icons.replay_10),
                                 iconSize: 32,
-                                onPressed: () => _controller.seekTo(_currentPosition - const Duration(seconds: 10)),
+                                onPressed: () => _controller.seekTo(
+                                  _currentPosition -
+                                      const Duration(seconds: 10),
+                                ),
                               ),
                               const SizedBox(width: 20),
                               Container(
@@ -365,7 +397,10 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
                               IconButton(
                                 icon: const Icon(Icons.forward_10),
                                 iconSize: 32,
-                                onPressed: () => _controller.seekTo(_currentPosition + const Duration(seconds: 10)),
+                                onPressed: () => _controller.seekTo(
+                                  _currentPosition +
+                                      const Duration(seconds: 10),
+                                ),
                               ),
                             ],
                           ),
@@ -377,32 +412,47 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
                             children: [
                               Slider(
                                 value: _duration.inMilliseconds > 0
-                                    ? _currentPosition.inMilliseconds.toDouble().clamp(
-                                        0.0,
-                                        _duration.inMilliseconds.toDouble(),
-                                      )
+                                    ? _currentPosition.inMilliseconds
+                                          .toDouble()
+                                          .clamp(
+                                            0.0,
+                                            _duration.inMilliseconds.toDouble(),
+                                          )
                                     : 0.0,
                                 min: 0,
-                                max: _duration.inMilliseconds > 0 ? _duration.inMilliseconds.toDouble() : 1.0,
+                                max: _duration.inMilliseconds > 0
+                                    ? _duration.inMilliseconds.toDouble()
+                                    : 1.0,
                                 onChangeStart: (_) => _isSeeking = true,
                                 onChanged: (value) {
-                                  if (_isSeeking && _duration.inMilliseconds > 0) {
+                                  if (_isSeeking &&
+                                      _duration.inMilliseconds > 0) {
                                     setState(() {
-                                      _currentPosition = Duration(milliseconds: value.toInt());
+                                      _currentPosition = Duration(
+                                        milliseconds: value.toInt(),
+                                      );
                                     });
                                   }
                                 },
                                 onChangeEnd: (value) {
                                   if (_duration.inMilliseconds > 0) {
-                                    _controller.seekTo(Duration(milliseconds: value.toInt()));
+                                    _controller.seekTo(
+                                      Duration(milliseconds: value.toInt()),
+                                    );
                                   }
                                 },
                               ),
                               Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 16),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                ),
                                 child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                  children: [Text(_formatDuration(_currentPosition)), Text(_formatDuration(_duration))],
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(_formatDuration(_currentPosition)),
+                                    Text(_formatDuration(_duration)),
+                                  ],
                                 ),
                               ),
                             ],
@@ -436,17 +486,27 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text('Speed', style: TextStyle(color: Colors.grey[600])),
+                                    Text(
+                                      'Speed',
+                                      style: TextStyle(color: Colors.grey[600]),
+                                    ),
                                     const SizedBox(height: 8),
                                     DropdownButton<double>(
                                       value: _playbackSpeed,
                                       isExpanded: true,
-                                      items: [0.5, 0.75, 1.0, 1.25, 1.5, 2.0].map((speed) {
-                                        return DropdownMenuItem(value: speed, child: Text('${speed}x'));
-                                      }).toList(),
+                                      items: [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+                                          .map((speed) {
+                                            return DropdownMenuItem(
+                                              value: speed,
+                                              child: Text('${speed}x'),
+                                            );
+                                          })
+                                          .toList(),
                                       onChanged: (value) {
                                         if (value != null) {
-                                          setState(() => _playbackSpeed = value);
+                                          setState(
+                                            () => _playbackSpeed = value,
+                                          );
                                           _controller.setSpeed(value);
                                         }
                                       },
@@ -458,20 +518,31 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
                               if (_qualities.isNotEmpty)
                                 Expanded(
                                   child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
-                                      Text('Quality', style: TextStyle(color: Colors.grey[600])),
+                                      Text(
+                                        'Quality',
+                                        style: TextStyle(
+                                          color: Colors.grey[600],
+                                        ),
+                                      ),
                                       const SizedBox(height: 8),
                                       DropdownButton<NativeVideoPlayerQuality>(
                                         value: _currentQuality,
                                         isExpanded: true,
                                         hint: const Text('Auto'),
                                         items: _qualities.map((quality) {
-                                          return DropdownMenuItem(value: quality, child: Text(quality.label));
+                                          return DropdownMenuItem(
+                                            value: quality,
+                                            child: Text(quality.label),
+                                          );
                                         }).toList(),
                                         onChanged: (value) {
                                           if (value != null) {
-                                            setState(() => _currentQuality = value);
+                                            setState(
+                                              () => _currentQuality = value,
+                                            );
                                             _controller.setQuality(value);
                                           }
                                         },
@@ -489,7 +560,8 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
                             children: [
                               Expanded(
                                 child: OutlinedButton.icon(
-                                  onPressed: () => _controller.toggleFullScreen(),
+                                  onPressed: () =>
+                                      _controller.toggleFullScreen(),
                                   icon: const Icon(Icons.fullscreen),
                                   label: const Text('Fullscreen'),
                                 ),
@@ -505,8 +577,12 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
                                         _controller.enterPictureInPicture();
                                       }
                                     },
-                                    icon: const Icon(Icons.picture_in_picture_alt),
-                                    label: Text(_isInPipMode ? 'Exit PiP' : 'PiP'),
+                                    icon: const Icon(
+                                      Icons.picture_in_picture_alt,
+                                    ),
+                                    label: Text(
+                                      _isInPipMode ? 'Exit PiP' : 'PiP',
+                                    ),
                                   ),
                                 ),
                               ],
@@ -526,16 +602,36 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
                         children: [
                           const Text(
                             'Video Statistics',
-                            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87),
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black87,
+                            ),
                           ),
                           const SizedBox(height: 16),
-                          _buildStatRow('Duration', _formatDuration(_duration), Icons.access_time),
+                          _buildStatRow(
+                            'Duration',
+                            _formatDuration(_duration),
+                            Icons.access_time,
+                          ),
                           const SizedBox(height: 12),
-                          _buildStatRow('Current Position', _formatDuration(_currentPosition), Icons.timer),
+                          _buildStatRow(
+                            'Current Position',
+                            _formatDuration(_currentPosition),
+                            Icons.timer,
+                          ),
                           const SizedBox(height: 12),
-                          _buildStatRow('Buffered', _formatDuration(_bufferedPosition), Icons.download_done),
+                          _buildStatRow(
+                            'Buffered',
+                            _formatDuration(_bufferedPosition),
+                            Icons.download_done,
+                          ),
                           const SizedBox(height: 12),
-                          _buildStatRow('Available Qualities', '${_qualities.length}', Icons.high_quality),
+                          _buildStatRow(
+                            'Available Qualities',
+                            '${_qualities.length}',
+                            Icons.high_quality,
+                          ),
                         ],
                       ),
                     ),
@@ -555,11 +651,18 @@ class _VideoDetailScreenFullState extends State<VideoDetailScreenFull> {
         Icon(icon, size: 20, color: Colors.grey[600]),
         const SizedBox(width: 12),
         Expanded(
-          child: Text(label, style: TextStyle(fontSize: 15, color: Colors.grey[700])),
+          child: Text(
+            label,
+            style: TextStyle(fontSize: 15, color: Colors.grey[700]),
+          ),
         ),
         Text(
           value,
-          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Colors.black87),
+          style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+            color: Colors.black87,
+          ),
         ),
       ],
     );

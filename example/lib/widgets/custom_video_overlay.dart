@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:better_native_video_player/better_native_video_player.dart';
 import 'package:flutter/material.dart';
+import 'subtitle_picker_modal.dart';
 
 /// Custom video overlay with controls
 ///
@@ -16,35 +19,91 @@ class CustomVideoOverlay extends StatefulWidget {
 
 class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
   bool _isSeeking = false;
+  Duration? _targetSeekPosition; // Track where we're seeking to
   Duration _currentPosition = Duration.zero;
   Duration _duration = Duration.zero;
   Duration _bufferedPosition = Duration.zero;
   PlayerActivityState _activityState = PlayerActivityState.idle;
   bool _isAirPlayAvailable = false;
+  bool _isAirPlayConnected = false;
   bool _isPipAvailable = false;
   List<NativeVideoPlayerQuality> _qualities = [];
   NativeVideoPlayerQuality? _currentQuality;
   double _currentSpeed = 1.0;
+  double _subtitleFontSize = 16.0;
+
+  // Stream subscriptions
+  StreamSubscription<List<NativeVideoPlayerQuality>>? _qualitiesSubscription;
+  StreamSubscription<Duration>? _bufferedPositionSubscription;
+  StreamSubscription<bool>? _airPlayConnectedSubscription;
+  StreamSubscription<bool>? _pipAvailableSubscription;
 
   // Available playback speeds
-  static const List<double> _availableSpeeds = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+  static const List<double> _availableSpeeds = [
+    0.25,
+    0.5,
+    0.75,
+    1.0,
+    1.25,
+    1.5,
+    1.75,
+    2.0,
+  ];
 
   @override
   void initState() {
     super.initState();
     widget.controller.addActivityListener(_handleActivityEvent);
     widget.controller.addControlListener(_handleControlEvent);
-    widget.controller.addAirPlayAvailabilityListener(_handleAirPlayAvailabilityChange);
+    widget.controller.addAirPlayAvailabilityListener(
+      _handleAirPlayAvailabilityChange,
+    );
 
     // Get initial state
     _currentPosition = widget.controller.currentPosition;
     _duration = widget.controller.duration;
     _activityState = widget.controller.activityState;
     _qualities = widget.controller.qualities;
+    _isPipAvailable = widget.controller.isPipAvailable;
 
+    // Subscribe to qualities stream
+    _qualitiesSubscription = widget.controller.qualitiesStream.listen(
+      _handleQualitiesChanged,
+    );
+
+    // Subscribe to buffered position stream
+    _bufferedPositionSubscription = widget.controller.bufferedPositionStream
+        .listen(_handleBufferedPositionChanged);
+
+    // Subscribe to AirPlay connection stream
+    _airPlayConnectedSubscription = widget.controller.isAirplayConnectedStream
+        .listen(_handleAirPlayConnectionChanged);
+
+    // Subscribe to PiP availability stream
+    _pipAvailableSubscription = widget.controller.isPipAvailableStream.listen(
+      _handlePipAvailabilityChanged,
+    );
+
+    // Also check PiP availability once (for first load)
     _getPipAvailability();
+  }
 
-    debugPrint('CustomVideoOverlay initialized with ${_qualities.length} qualities');
+  void _handleQualitiesChanged(List<NativeVideoPlayerQuality> qualities) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _qualities = qualities;
+    });
+  }
+
+  void _handleBufferedPositionChanged(Duration bufferedPosition) {
+    if (!mounted || _isSeeking) {
+      return;
+    }
+    setState(() {
+      _bufferedPosition = bufferedPosition;
+    });
   }
 
   void _getPipAvailability() async {
@@ -52,7 +111,6 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
     if (!mounted) {
       return;
     }
-    debugPrint('PiP availability: $isAvailable');
     setState(() {
       _isPipAvailable = isAvailable;
     });
@@ -62,9 +120,26 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
     if (!mounted) {
       return;
     }
-    debugPrint('AirPlay availability changed: $isAvailable');
     setState(() {
       _isAirPlayAvailable = isAvailable;
+    });
+  }
+
+  void _handleAirPlayConnectionChanged(bool isConnected) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isAirPlayConnected = isConnected;
+    });
+  }
+
+  void _handlePipAvailabilityChanged(bool isAvailable) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isPipAvailable = isAvailable;
     });
   }
 
@@ -72,16 +147,20 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
   void dispose() {
     widget.controller.removeActivityListener(_handleActivityEvent);
     widget.controller.removeControlListener(_handleControlEvent);
-    widget.controller.removeAirPlayAvailabilityListener(_handleAirPlayAvailabilityChange);
+    widget.controller.removeAirPlayAvailabilityListener(
+      _handleAirPlayAvailabilityChange,
+    );
+    _qualitiesSubscription?.cancel();
+    _bufferedPositionSubscription?.cancel();
+    _airPlayConnectedSubscription?.cancel();
+    _pipAvailableSubscription?.cancel();
     super.dispose();
   }
 
   void _handleActivityEvent(PlayerActivityEvent event) {
     if (!mounted) {
-      debugPrint('CustomVideoOverlay._handleActivityEvent called but not mounted');
       return;
     }
-    debugPrint('CustomVideoOverlay._handleActivityEvent: ${event.state}');
     setState(() {
       _activityState = event.state;
     });
@@ -89,14 +168,12 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
 
   void _handleControlEvent(PlayerControlEvent event) {
     if (!mounted) {
-      debugPrint('CustomVideoOverlay._handleControlEvent called but not mounted');
       return;
     }
 
     // Handle PiP availability changes
     if (event.state == PlayerControlState.pipAvailabilityChanged) {
       final isAvailable = event.data?['isAvailable'] as bool? ?? false;
-      debugPrint('PiP availability changed: $isAvailable');
       setState(() {
         _isPipAvailable = isAvailable;
       });
@@ -106,36 +183,55 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
     // Handle AirPlay availability changes
     if (event.state == PlayerControlState.airPlayAvailabilityChanged) {
       final isAvailable = event.data?['isAvailable'] as bool? ?? false;
-      debugPrint('AirPlay availability changed: $isAvailable');
       setState(() {
         _isAirPlayAvailable = isAvailable;
       });
       return;
     }
 
-    if (!_isPipAvailable) {
-      _getPipAvailability();
-    }
+    if (event.state == PlayerControlState.timeUpdated) {
+      final newPosition = widget.controller.currentPosition;
 
-    if (event.state == PlayerControlState.timeUpdated && !_isSeeking) {
-      setState(() {
-        _currentPosition = widget.controller.currentPosition;
-        _duration = widget.controller.duration;
-        _bufferedPosition = widget.controller.bufferedPosition;
-      });
-    } else if (event.state == PlayerControlState.qualityChanged) {
-      // Update available qualities and current quality
-      setState(() {
-        _qualities = widget.controller.qualities;
-        if (event.data != null && event.data!.containsKey('quality')) {
-          _currentQuality = NativeVideoPlayerQuality.fromMap(event.data!['quality'] as Map<dynamic, dynamic>);
+      // If we have a target seek position, check if we've reached it
+      if (_targetSeekPosition != null) {
+        // Consider the seek complete if we're within 200ms of the target
+        final difference =
+            (newPosition.inMilliseconds - _targetSeekPosition!.inMilliseconds)
+                .abs();
+        if (difference < 200) {
+          // Seek completed, clear the flag and target
+          setState(() {
+            _isSeeking = false;
+            _targetSeekPosition = null;
+            _currentPosition = newPosition;
+            _duration = widget.controller.duration;
+          });
         }
-      });
+        // Otherwise, ignore this update as it's likely an old position
+        return;
+      }
+
+      // Normal update when not seeking
+      if (!_isSeeking) {
+        setState(() {
+          _currentPosition = newPosition;
+          _duration = widget.controller.duration;
+          // bufferedPosition is now handled by bufferedPositionStream
+        });
+      }
+    } else if (event.state == PlayerControlState.qualityChanged) {
+      // Update current quality (available qualities are handled by the stream)
+      if (event.data != null && event.data!.containsKey('quality')) {
+        setState(() {
+          _currentQuality = NativeVideoPlayerQuality.fromMap(
+            event.data!['quality'] as Map<dynamic, dynamic>,
+          );
+        });
+      }
     } else if (event.state == PlayerControlState.speedChanged) {
       // Update current speed when it changes (e.g., from another overlay instance)
       if (event.data != null && event.data!.containsKey('speed')) {
         final speed = event.data!['speed'] as num;
-        debugPrint('CustomVideoOverlay: Speed changed to ${speed}x');
         setState(() {
           _currentSpeed = speed.toDouble();
         });
@@ -143,12 +239,9 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
     } else if (event.state == PlayerControlState.fullscreenEntered ||
         event.state == PlayerControlState.fullscreenExited) {
       // Trigger rebuild when fullscreen state changes so controls visibility updates
-      debugPrint('CustomVideoOverlay: Fullscreen state changed to ${widget.controller.isFullScreen}');
       setState(() {
         // No state to update, just trigger rebuild to update conditional UI elements
       });
-    } else if (event.state != PlayerControlState.timeUpdated) {
-      debugPrint('CustomVideoOverlay._handleControlEvent: ${event.state}');
     }
   }
 
@@ -168,12 +261,20 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
   }
 
   void _onSeekEnd(double value) {
+    final targetPosition = Duration(milliseconds: value.toInt());
     if (_duration.inMilliseconds > 0) {
-      widget.controller.seekTo(Duration(milliseconds: value.toInt()));
+      setState(() {
+        // Store target position and keep _isSeeking true until we reach it
+        _targetSeekPosition = targetPosition;
+        _currentPosition = targetPosition; // Show target position immediately
+      });
+      widget.controller.seekTo(targetPosition);
+    } else {
+      setState(() {
+        _isSeeking = false;
+        _targetSeekPosition = null;
+      });
     }
-    setState(() {
-      _isSeeking = false;
-    });
   }
 
   String _formatDuration(Duration duration) {
@@ -214,7 +315,10 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
               // PiP button (only shown if available and not in fullscreen)
               if (_isPipAvailable)
                 IconButton(
-                  icon: const Icon(Icons.picture_in_picture_alt, color: Colors.white),
+                  icon: const Icon(
+                    Icons.picture_in_picture_alt,
+                    color: Colors.white,
+                  ),
                   onPressed: () async {
                     await widget.controller.enterPictureInPicture();
                   },
@@ -223,11 +327,16 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
               // AirPlay button (only shown if available)
               if (_isAirPlayAvailable)
                 IconButton(
-                  icon: const Icon(Icons.airplay, color: Colors.white),
+                  icon: Icon(
+                    _isAirPlayConnected ? Icons.cast_connected : Icons.airplay,
+                    color: _isAirPlayConnected ? Colors.blue : Colors.white,
+                  ),
                   onPressed: () async {
                     await widget.controller.showAirPlayPicker();
                   },
-                  tooltip: 'AirPlay',
+                  tooltip: _isAirPlayConnected
+                      ? 'AirPlay Connected'
+                      : 'AirPlay',
                 ),
             ],
           ),
@@ -242,7 +351,9 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
               IconButton(
                 icon: const Icon(Icons.replay_10, color: Colors.white),
                 onPressed: () {
-                  widget.controller.seekTo(_currentPosition - const Duration(seconds: 10));
+                  widget.controller.seekTo(
+                    _currentPosition - const Duration(seconds: 10),
+                  );
                 },
               ),
 
@@ -253,7 +364,9 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
               IconButton(
                 icon: const Icon(Icons.forward_10, color: Colors.white),
                 onPressed: () {
-                  widget.controller.seekTo(_currentPosition + const Duration(seconds: 10));
+                  widget.controller.seekTo(
+                    _currentPosition + const Duration(seconds: 10),
+                  );
                 },
               ),
             ],
@@ -274,41 +387,61 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
                 child: Row(
                   spacing: 8,
                   children: [
-                    Text(_formatDuration(_currentPosition), style: const TextStyle(color: Colors.white, fontSize: 12)),
+                    Text(
+                      _formatDuration(_currentPosition),
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
                     Expanded(
                       child: SliderTheme(
                         data: SliderThemeData(
                           trackHeight: 4,
-                          thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                          overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                          thumbShape: const RoundSliderThumbShape(
+                            enabledThumbRadius: 6,
+                          ),
+                          overlayShape: const RoundSliderOverlayShape(
+                            overlayRadius: 12,
+                          ),
                           activeTrackColor: Colors.red,
-                          inactiveTrackColor: Colors.white.withValues(alpha: 0.3),
-                          secondaryActiveTrackColor: Colors.white.withValues(alpha: 0.5),
+                          inactiveTrackColor: Colors.white.withValues(
+                            alpha: 0.3,
+                          ),
+                          secondaryActiveTrackColor: Colors.white.withValues(
+                            alpha: 0.5,
+                          ),
                           thumbColor: Colors.red,
                           overlayColor: Colors.red.withValues(alpha: 0.3),
                         ),
                         child: Slider(
                           value: _duration.inMilliseconds > 0
-                              ? _currentPosition.inMilliseconds.toDouble().clamp(
-                                  0.0,
-                                  _duration.inMilliseconds.toDouble(),
-                                )
+                              ? _currentPosition.inMilliseconds
+                                    .toDouble()
+                                    .clamp(
+                                      0.0,
+                                      _duration.inMilliseconds.toDouble(),
+                                    )
                               : 0.0,
                           secondaryTrackValue: _duration.inMilliseconds > 0
-                              ? _bufferedPosition.inMilliseconds.toDouble().clamp(
-                                  0.0,
-                                  _duration.inMilliseconds.toDouble(),
-                                )
+                              ? _bufferedPosition.inMilliseconds
+                                    .toDouble()
+                                    .clamp(
+                                      0.0,
+                                      _duration.inMilliseconds.toDouble(),
+                                    )
                               : 0.0,
                           min: 0,
-                          max: _duration.inMilliseconds > 0 ? _duration.inMilliseconds.toDouble() : 1.0,
+                          max: _duration.inMilliseconds > 0
+                              ? _duration.inMilliseconds.toDouble()
+                              : 1.0,
                           onChangeStart: _onSeekStart,
                           onChanged: _onSeekChange,
                           onChangeEnd: _onSeekEnd,
                         ),
                       ),
                     ),
-                    Text(_formatDuration(_duration), style: const TextStyle(color: Colors.white, fontSize: 12)),
+                    Text(
+                      _formatDuration(_duration),
+                      style: const TextStyle(color: Colors.white, fontSize: 12),
+                    ),
                     // Speed control (only in fullscreen to avoid platform view disposal)
                     if (widget.controller.isFullScreen)
                       TextButton(
@@ -318,7 +451,13 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
                           minimumSize: Size.zero,
                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         ),
-                        child: Text('${_currentSpeed}x', style: const TextStyle(color: Colors.white, fontSize: 12)),
+                        child: Text(
+                          '${_currentSpeed}x',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                          ),
+                        ),
                       ),
                     // Quality control (only in fullscreen to avoid platform view disposal)
                     if (widget.controller.isFullScreen && _qualities.isNotEmpty)
@@ -331,13 +470,28 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
                         ),
                         child: Text(
                           _currentQuality?.label ?? 'Auto',
-                          style: const TextStyle(color: Colors.white, fontSize: 12),
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                          ),
                         ),
+                      ),
+                    // Subtitle control (only in fullscreen to avoid platform view disposal)
+                    if (widget.controller.isFullScreen)
+                      IconButton(
+                        icon: const Icon(
+                          Icons.closed_caption,
+                          color: Colors.white,
+                        ),
+                        onPressed: _showSubtitlePicker,
+                        tooltip: 'Subtitles',
                       ),
                     // Fullscreen toggle
                     IconButton(
                       icon: Icon(
-                        widget.controller.isFullScreen ? Icons.fullscreen_exit : Icons.fullscreen,
+                        widget.controller.isFullScreen
+                            ? Icons.fullscreen_exit
+                            : Icons.fullscreen,
                         color: Colors.white,
                       ),
                       onPressed: () {
@@ -367,22 +521,31 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
           stops: const [0.0, 0.3, 0.7, 1.0],
         ),
       ),
-      child: widget.controller.isFullScreen ? SafeArea(child: stackWidget) : stackWidget,
+      child: widget.controller.isFullScreen
+          ? SafeArea(child: stackWidget)
+          : stackWidget,
     );
   }
 
   Widget _buildPlayPauseButton() {
     // Show loading indicator when buffering or loading
-    if (_activityState == PlayerActivityState.buffering || _activityState == PlayerActivityState.loading) {
+    if (_activityState == PlayerActivityState.buffering ||
+        _activityState == PlayerActivityState.loading) {
       return Container(
         width: 64,
         height: 64,
-        decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.5), shape: BoxShape.circle),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.5),
+          shape: BoxShape.circle,
+        ),
         child: const Center(
           child: SizedBox(
             width: 32,
             height: 32,
-            child: CircularProgressIndicator(strokeWidth: 3, valueColor: AlwaysStoppedAnimation<Color>(Colors.white)),
+            child: CircularProgressIndicator(
+              strokeWidth: 3,
+              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+            ),
           ),
         ),
       );
@@ -392,11 +555,17 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
     return Container(
       width: 64,
       height: 64,
-      decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.5), shape: BoxShape.circle),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.5),
+        shape: BoxShape.circle,
+      ),
       child: IconButton(
-        icon: Icon(_activityState.isPlaying ? Icons.pause : Icons.play_arrow, color: Colors.white, size: 36),
+        icon: Icon(
+          _activityState.isPlaying ? Icons.pause : Icons.play_arrow,
+          color: Colors.white,
+          size: 36,
+        ),
         onPressed: () {
-          debugPrint('Play/Pause button pressed, isPlaying: ${_activityState.isPlaying}');
           if (_activityState.isPlaying) {
             widget.controller.pause();
           } else {
@@ -423,7 +592,11 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
                 padding: const EdgeInsets.all(16.0),
                 child: Text(
                   'Select Quality',
-                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
               const Divider(color: Colors.white24, height: 1),
@@ -437,19 +610,25 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
                         quality.label,
                         style: TextStyle(
                           color: isSelected ? Colors.red : Colors.white,
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                          fontWeight: isSelected
+                              ? FontWeight.bold
+                              : FontWeight.normal,
                         ),
                       ),
                       subtitle: quality.bitrate != null
                           ? Text(
                               '${quality.width ?? '?'}x${quality.height ?? '?'} - ${(quality.bitrate! / 1000000).toStringAsFixed(2)} Mbps',
                               style: TextStyle(
-                                color: isSelected ? Colors.red.withValues(alpha: 0.7) : Colors.white70,
+                                color: isSelected
+                                    ? Colors.red.withValues(alpha: 0.7)
+                                    : Colors.white70,
                                 fontSize: 12,
                               ),
                             )
                           : null,
-                      trailing: isSelected ? const Icon(Icons.check, color: Colors.red) : null,
+                      trailing: isSelected
+                          ? const Icon(Icons.check, color: Colors.red)
+                          : null,
                       onTap: () {
                         widget.controller.setQuality(quality);
                         Navigator.pop(context);
@@ -486,7 +665,11 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
                 padding: const EdgeInsets.all(16.0),
                 child: Text(
                   'Playback Speed',
-                  style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
               const Divider(color: Colors.white24, height: 1),
@@ -500,7 +683,9 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
                         '${speed}x',
                         style: TextStyle(
                           color: isSelected ? Colors.red : Colors.white,
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                          fontWeight: isSelected
+                              ? FontWeight.bold
+                              : FontWeight.normal,
                         ),
                       ),
                       subtitle: Text(
@@ -510,15 +695,17 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
                             ? 'Slower'
                             : 'Faster',
                         style: TextStyle(
-                          color: isSelected ? Colors.red.withValues(alpha: 0.7) : Colors.white70,
+                          color: isSelected
+                              ? Colors.red.withValues(alpha: 0.7)
+                              : Colors.white70,
                           fontSize: 12,
                         ),
                       ),
-                      trailing: isSelected ? const Icon(Icons.check, color: Colors.red) : null,
+                      trailing: isSelected
+                          ? const Icon(Icons.check, color: Colors.red)
+                          : null,
                       onTap: () async {
-                        debugPrint('Setting speed to: $speed');
                         await widget.controller.setSpeed(speed);
-                        debugPrint('Speed set successfully');
                         if (!context.mounted) return;
                         Navigator.pop(context);
                         if (mounted) {
@@ -534,6 +721,22 @@ class _CustomVideoOverlayState extends State<CustomVideoOverlay> {
             ],
           ),
         );
+      },
+    );
+  }
+
+  /// Shows the subtitle picker modal
+  void _showSubtitlePicker() {
+    showSubtitlePicker(
+      context: context,
+      controller: widget.controller,
+      fontSize: _subtitleFontSize,
+      onFontSizeChanged: (newSize) {
+        if (mounted) {
+          setState(() {
+            _subtitleFontSize = newSize;
+          });
+        }
       },
     );
   }

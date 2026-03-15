@@ -1,12 +1,13 @@
 import Flutter
 import AVFoundation
 import AVKit
+
 import MediaPlayer
 
+// Add reference to VideoPlayerView in the extension scope
 extension VideoPlayerView {
 
     func handleLoad(call: FlutterMethodCall, result: @escaping FlutterResult) {
-        print("handleLoad called with arguments: \(String(describing: call.arguments))")
 
         guard let arguments = call.arguments as? [String: Any],
               let urlString = arguments["url"] as? String,
@@ -20,31 +21,43 @@ extension VideoPlayerView {
         let autoPlay = arguments["autoPlay"] as? Bool ?? false
         let headers = arguments["headers"] as? [String: String]
         let mediaInfo = arguments["mediaInfo"] as? [String: Any]
+        let drmConfig = arguments["drmConfig"] as? [String: Any]
 
         // Store media info for Now Playing
         if let mediaInfo = mediaInfo {
             currentMediaInfo = mediaInfo
-            print("📱 Stored media info during load: \(mediaInfo["title"] ?? "Unknown")")
-        } else {
-            print("⚠️ No media info provided during load")
+
+            // Also store in SharedPlayerManager to persist across view recreations
+            if let controllerIdValue = controllerId {
+                SharedPlayerManager.shared.setMediaInfo(for: controllerIdValue, mediaInfo: mediaInfo)
+            }
         }
+
+        // Reset stall recovery guard — a new load invalidates any in-flight seek.
+        isRecoveringFromStall = false
 
         sendEvent("loading")
 
-        // Fetch qualities (async)
-        VideoPlayerQualityHandler.fetchHLSQualities(from: url) { [weak self] qualities in
-            self?.qualityLevels = qualities
-            
+        // Determine if this is likely an HLS stream
+        let isHls = isHlsUrl(url)
+
+        // Fetch qualities (async) only for HLS streams
+        if isHls {
+            VideoPlayerQualityHandler.fetchHLSQualities(from: url) { [weak self] qualities in
+            guard let self = self else { return }
+
+            self.qualityLevels = qualities
+
             // Convert to Flutter format
             var result: [[String: Any]] = []
-            
+
             // Add auto quality option
             result.append([
                 "label": "Auto",
                 "url": qualities.first?.url ?? "",
                 "isAuto": true
             ])
-            
+
             // Add all available qualities
             result.append(contentsOf: qualities.map { quality in
                 [
@@ -56,20 +69,73 @@ extension VideoPlayerView {
                     "isAuto": false
                 ]
             })
-            
+
             // Send qualities to Flutter
-            self?.availableQualities = result
+            self.availableQualities = result
+
+            // Store in SharedPlayerManager if this is a shared player
+            if let controllerIdValue = self.controllerId {
+                SharedPlayerManager.shared.setQualities(
+                    for: controllerIdValue,
+                    qualities: result,
+                    qualityLevels: qualities
+                )
+            }
+
+            // Send qualityChange event to notify Flutter that qualities are loaded
+            if !result.isEmpty, let defaultQuality = result.first {
+                self.sendEvent("qualityChange", data: [
+                    "url": defaultQuality["url"] as? String ?? "",
+                    "label": defaultQuality["label"] as? String ?? "Auto",
+                    "isAuto": defaultQuality["isAuto"] as? Bool ?? true
+                ])
+            }
+            }
+        } else {
         }
 
         // --- Build player item ---
         let playerItem: AVPlayerItem
+        let asset: AVURLAsset
+        
+        // Create asset with headers if provided
         if let headers = headers {
-            let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
-            playerItem = AVPlayerItem(asset: asset)
+            asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         } else {
-            playerItem = AVPlayerItem(url: url)
+            asset = AVURLAsset(url: url)
+        }
+        
+        // Setup DRM if configured
+        if let drmConfig = drmConfig {
+            // Clean up existing DRM handler if any
+            self.drmHandler?.cleanup()
+            
+            let drmHandler = VideoPlayerDrmHandler(drmConfig: drmConfig)
+            self.drmHandler = drmHandler
+            
+            // Setup DRM asynchronously
+            drmHandler.setupDRM(asset: asset) { [weak self] success, error in
+                if let error = error {
+                    // Continue with playback even if DRM setup fails
+                    // The player will attempt to play and may fail later
+                } else {
+                }
+            }
+        }
+        
+        // Remove observers from old item before replacing
+        if let oldItem = player?.currentItem {
+            removeItemObservers(from: oldItem)
         }
 
+        playerItem = AVPlayerItem(asset: asset)
+
+        if #available(iOS 15.0, *) {
+            playerItem.startsOnFirstEligibleVariant = true
+        }
+
+        // Replace current item immediately - don't wait for HDR configuration
+        // This allows the video to start loading right away
         player?.replaceCurrentItem(with: playerItem)
 
         // --- Set up observers for buffer status and player state ---
@@ -77,10 +143,6 @@ extension VideoPlayerView {
 
         // --- Set up periodic time observer for Now Playing elapsed time updates ---
         setupPeriodicTimeObserver()
-
-        // --- Set up audio session ---
-        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback, options: [])
-        try? AVAudioSession.sharedInstance().setActive(true)
 
         // --- Listen for end of playback ---
         NotificationCenter.default.addObserver(
@@ -99,7 +161,6 @@ extension VideoPlayerView {
 
             switch item.status {
             case .readyToPlay:
-                print("🎬 Video ready to play")
 
                 // Get duration
                 let duration = item.duration
@@ -122,11 +183,9 @@ extension VideoPlayerView {
                 // as it interferes with automatic PiP from AVPlayerViewController
                 if #available(iOS 14.0, *) {
                     if AVPictureInPictureController.isPictureInPictureSupported() {
-                        print("🎬 PiP is supported on this device")
                         // Send availability immediately
                         self.sendEvent("pipAvailabilityChanged", data: ["isAvailable": true])
                     } else {
-                        print("🎬 PiP is NOT supported on this device")
                         self.sendEvent("pipAvailabilityChanged", data: ["isAvailable": false])
                     }
                 } else {
@@ -136,7 +195,13 @@ extension VideoPlayerView {
 
                 // Auto play if requested
                 if autoPlay {
+                    // Prepare audio session, Now Playing info, and PiP before playback
+                    self.prepareForPlayback()
+
+                    // Start playback
                     self.player?.play()
+                    self.player?.rate = self.desiredPlaybackSpeed
+                    self.updateNowPlayingPlaybackTime()
                     // Play event will be sent automatically by timeControlStatus observer
                 }
 
@@ -159,29 +224,35 @@ extension VideoPlayerView {
     }
 
 
-    func handlePlay(result: @escaping FlutterResult) {
-        try? AVAudioSession.sharedInstance().setActive(true)
+    /// Prepares the player for playback by setting up audio session, Now Playing info, and PiP
+    /// This should be called before starting playback to ensure proper background audio and lock screen controls
+    private func prepareForPlayback() {
+        // CRITICAL: Activate audio session BEFORE calling player.play()
+        // This ensures audio continues when the screen locks
+        prepareAudioSession()
 
-        // Set media item on every play to ensure this player has control
-        if let mediaInfo = currentMediaInfo {
-            let title = mediaInfo["title"] ?? "Unknown"
-            print("📱 Setting Now Playing info for: \(title)")
-            setupNowPlayingInfo(mediaInfo: mediaInfo)
-            
-            // Verify it was set correctly
-            if let nowPlayingTitle = MPNowPlayingInfoCenter.default().nowPlayingInfo?[MPMediaItemPropertyTitle] as? String {
-                print("✅  Now Playing info confirmed: \(nowPlayingTitle)")
+        // ALWAYS set media item on play to ensure this player has control
+        // This is critical for both normal playback and PiP mode
+        var mediaInfo = currentMediaInfo
+
+        // Fallback: Try to retrieve from SharedPlayerManager if not available locally
+        if mediaInfo == nil, let controllerIdValue = controllerId {
+            mediaInfo = SharedPlayerManager.shared.getMediaInfo(for: controllerIdValue)
+            if mediaInfo != nil {
+                currentMediaInfo = mediaInfo // Update local copy
             }
-        } else {
-            print("⚠️  No media info available when playing")
         }
-        
+
+        if let mediaInfo = mediaInfo {
+            setupNowPlayingInfo(mediaInfo: mediaInfo)
+        }
+
         // Mark this view as the primary (active) view for this controller
         // This ensures automatic PiP will be enabled on THIS view, not other views
         if let controllerIdValue = controllerId {
             SharedPlayerManager.shared.setPrimaryView(viewId, for: controllerIdValue)
         }
-        
+
         // Enable automatic PiP for this controller and disable for all others
         // Only if automatic PiP was requested in creation params
         if #available(iOS 14.2, *) {
@@ -191,16 +262,18 @@ extension VideoPlayerView {
                 if shouldEnableAutoPiP {
                     SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
                 } else {
-                    print("🎬 Automatic PiP not enabled (canStartPictureInPictureAutomatically = false)")
                 }
             }
         }
+    }
 
-        print("Playing with speed: \(desiredPlaybackSpeed)")
+    func handlePlay(result: @escaping FlutterResult) {
+        // Prepare audio session, Now Playing info, and PiP before playback
+        prepareForPlayback()
+
         player?.play()
         // Apply the desired playback speed
         player?.rate = desiredPlaybackSpeed
-        print("Applied playback rate: \(player?.rate ?? 0)")
         updateNowPlayingPlaybackTime()
         // Play event will be sent automatically by timeControlStatus observer
         result(nil)
@@ -209,15 +282,16 @@ extension VideoPlayerView {
     func handlePause(result: @escaping FlutterResult) {
         player?.pause()
         updateNowPlayingPlaybackTime()
-        
-        // Disable automatic PiP when paused
-        // This prevents automatic PiP from triggering for paused videos
+
+        // DON'T disable automatic PiP on pause anymore
+        // The system will handle when to trigger automatic PiP based on playback state
+        // Disabling it here causes issues when exiting manual PiP (video might pause during transition)
+        // and prevents automatic PiP from working afterward
         if #available(iOS 14.2, *) {
-            if let controllerIdValue = controllerId, canStartPictureInPictureAutomatically {
-                SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: false)
+            if let controllerIdValue = controllerId {
             }
         }
-        
+
         // Pause event will be sent automatically by timeControlStatus observer
         result(nil)
     }
@@ -226,9 +300,9 @@ extension VideoPlayerView {
         if let args = call.arguments as? [String: Any],
            let milliseconds = args["milliseconds"] as? Int {
             let seconds = Double(milliseconds) / 1000.0
-            player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 1000)) { _ in
-                self.sendEvent("seek", data: ["position": milliseconds])
-                self.updateNowPlayingPlaybackTime()
+            player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 1000)) { [weak self] _ in
+                self?.sendEvent("seek", data: ["position": milliseconds])
+                self?.updateNowPlayingPlaybackTime()
             }
         }
         result(nil)
@@ -245,25 +319,34 @@ extension VideoPlayerView {
     func handleSetSpeed(call: FlutterMethodCall, result: @escaping FlutterResult) {
         if let args = call.arguments as? [String: Any],
            let speed = args["speed"] as? Double {
-            print("Setting playback speed to: \(speed)")
 
             // Store the desired speed
             desiredPlaybackSpeed = Float(speed)
 
-            print("Player status: \(player?.timeControlStatus.rawValue ?? -1)")
 
             // If currently playing, apply the speed immediately
             if player?.timeControlStatus == .playing {
-                print("Player is playing, applying speed immediately")
                 player?.rate = Float(speed)
             } else {
-                print("Player is not playing, speed will be applied on next play")
             }
 
             sendEvent("speedChange", data: ["speed": speed])
             result(nil)
         } else {
             result(FlutterError(code: "INVALID_SPEED", message: "Invalid speed value", details: nil))
+        }
+    }
+
+    func handleSetLooping(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        if let args = call.arguments as? [String: Any],
+           let looping = args["looping"] as? Bool {
+
+            // Update the enableLooping property
+            enableLooping = looping
+
+            result(nil)
+        } else {
+            result(FlutterError(code: "INVALID_LOOPING", message: "Invalid looping value", details: nil))
         }
     }
 
@@ -275,138 +358,88 @@ extension VideoPlayerView {
             result(FlutterError(code: "INVALID_QUALITY", message: "Invalid quality data", details: nil))
             return
         }
-        
+
         let isAuto = qualityInfo["isAuto"] as? Bool ?? false
-        isAutoQuality = isAuto
-        
+
         if isAuto {
-            // Start with the middle quality for auto mode
-            let midIndex = max(0, qualityLevels.count / 2 - 1)
-            guard midIndex < qualityLevels.count else {
-                result(FlutterError(code: "NO_QUALITIES", message: "No qualities available", details: nil))
-                return
-            }
-            
-            let initialQuality = qualityLevels[midIndex]
-            switchToQuality(initialQuality, result: result)
-            
-            // Enable quality monitoring
-            startQualityMonitoring()
-        } else {
-            guard let urlString = qualityInfo["url"] as? String,
-                  let url = URL(string: urlString) else {
-                result(FlutterError(code: "INVALID_URL", message: "Invalid quality URL", details: nil))
-                return
-            }
-            
-            sendEvent("loading")
-            
-            // Store current playback state and position
-            let wasPlaying = player?.rate != 0
-            let currentTime = player?.currentTime() ?? CMTime.zero
-            
-            let newItem = AVPlayerItem(url: url)
-            player?.replaceCurrentItem(with: newItem)
-            player?.seek(to: currentTime)
-            
-            // Only resume playback if it was playing before
-            if wasPlaying {
-                player?.play()
-            }
-            
+            // Remove bitrate/resolution constraints — AVPlayer uses native ABR
+            player?.currentItem?.preferredPeakBitRate = 0
+            player?.currentItem?.preferredMaximumResolution = .zero
+
             sendEvent("qualityChange", data: [
-                "url": urlString,
+                "url": "",
+                "label": "Auto",
+                "isAuto": true
+            ])
+        } else {
+            let width = qualityInfo["width"] as? Int ?? 0
+            let height = qualityInfo["height"] as? Int ?? 0
+
+            // Only constrain resolution — let AVPlayer pick the highest bitrate
+            // variant at this resolution (which may be HEVC over H.264).
+            // Setting preferredPeakBitRate simultaneously over-constrains the ABR
+            // and can exclude higher-bitrate codec variants at the same resolution.
+            player?.currentItem?.preferredPeakBitRate = 0
+            player?.currentItem?.preferredMaximumResolution = CGSize(width: width, height: height)
+
+            sendEvent("qualityChange", data: [
+                "url": qualityInfo["url"] as? String ?? "",
                 "label": qualityInfo["label"] as? String ?? "",
                 "isAuto": false
             ])
+        }
+
+        // For live streams, seek to live edge after quality switch to force
+        // keyframe re-sync. Without this, the decoder can stall on segments
+        // that fall out of the sliding window during PiP.
+        if let item = player?.currentItem, item.duration == .indefinite,
+           let lastRange = item.seekableTimeRanges.last?.timeRangeValue {
+            let liveEdge = CMTimeRangeGetEnd(lastRange)
+            player?.seek(to: liveEdge, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                self?.player?.play()
+            }
+        }
+
+        result(nil)
+    }
+
+    func handleConfigureForLivePlayback(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        let args = call.arguments as? [String: Any]
+        let bufferDuration = args?["bufferDuration"] as? Double ?? 4.0
+
+        player?.automaticallyWaitsToMinimizeStalling = false
+        player?.currentItem?.preferredForwardBufferDuration = bufferDuration
+        player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = true
+
+        if #available(iOS 13.0, *) {
+            player?.currentItem?.automaticallyPreservesTimeOffsetFromLive = true
+        }
+
+        result(nil)
+    }
+
+    func handleSeekToLiveEdge(result: @escaping FlutterResult) {
+        guard let item = player?.currentItem else {
+            result(nil)
+            return
+        }
+        guard let lastRange = item.seekableTimeRanges.last?.timeRangeValue else {
+            result(nil)
+            return
+        }
+        let liveEdge = CMTimeRangeGetEnd(lastRange)
+        player?.seek(to: liveEdge, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
             result(nil)
         }
     }
-    
-    private func startQualityMonitoring() {
-        // Remove existing observer if any
-        if let timeObserver = timeObserver {
-            player?.removeTimeObserver(timeObserver)
-        }
-        
-        // Monitor playback every second for auto-quality
-        let interval = CMTime(seconds: 1.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
-        timeObserver = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] _ in
-            self?.checkAndAdjustQuality()
-        }
-    }
-    
-    private func checkAndAdjustQuality() {
-        guard isAutoQuality,
-              !qualityLevels.isEmpty,
-              CACurrentMediaTime() - lastBitrateCheck >= bitrateCheckInterval else {
+
+    func handleGetLatencyToLive(result: @escaping FlutterResult) {
+        guard let currentDate = player?.currentItem?.currentDate() else {
+            result(nil)
             return
         }
-        
-        lastBitrateCheck = CACurrentMediaTime()
-        
-        // Get current playback statistics
-        let loadedTimeRanges = player?.currentItem?.loadedTimeRanges ?? []
-        let currentTime = player?.currentTime() ?? CMTime.zero
-        
-        // Calculate buffer health
-        var bufferHealth: TimeInterval = 0
-        for range in loadedTimeRanges {
-            let timeRange = range.timeRangeValue
-            if timeRange.start <= currentTime {
-                bufferHealth += timeRange.duration.seconds
-            }
-        }
-        
-        // Get current quality index
-        guard let urlAsset = player?.currentItem?.asset as? AVURLAsset,
-              let currentUrl = urlAsset.url.absoluteString as String?,
-              let currentIndex = qualityLevels.firstIndex(where: { $0.url == currentUrl }) else {
-            return
-        }
-        
-        // Adjust quality based on buffer health
-        var targetIndex = currentIndex
-        
-        if bufferHealth < 3.0 && currentIndex > 0 {
-            // Buffer is low, decrease quality
-            targetIndex = currentIndex - 1
-        } else if bufferHealth > 10.0 && currentIndex < qualityLevels.count - 1 {
-            // Buffer is healthy, try increasing quality
-            targetIndex = currentIndex + 1
-        }
-        
-        if targetIndex != currentIndex {
-            switchToQuality(qualityLevels[targetIndex], result: nil)
-        }
-    }
-    
-    private func switchToQuality(_ quality: VideoPlayer.QualityLevel, result: FlutterResult?) {
-        guard let url = URL(string: quality.url) else {
-            result?(FlutterError(code: "INVALID_URL", message: "Invalid quality URL", details: nil))
-            return
-        }
-        
-        sendEvent("loading")
-        
-        let wasPlaying = player?.rate != 0
-        let currentTime = player?.currentTime() ?? CMTime.zero
-        
-        let newItem = AVPlayerItem(url: url)
-        player?.replaceCurrentItem(with: newItem)
-        player?.seek(to: currentTime)
-        
-        if wasPlaying {
-            player?.play()
-        }
-        
-        sendEvent("qualityChange", data: [
-            "url": quality.url,
-            "label": quality.label,
-            "isAuto": isAutoQuality
-        ])
-        
-        result?(nil)
+        let latency = Date().timeIntervalSince(currentDate)
+        result(max(0.0, latency))
     }
 
     func handleSetShowNativeControls(call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -480,16 +513,75 @@ extension VideoPlayerView {
         }
     }
 
+    func handleDisconnectAirPlay(result: @escaping FlutterResult) {
+        guard let player = player else {
+            result(FlutterError(code: "NO_PLAYER", message: "Player not initialized", details: nil))
+            return
+        }
+
+        // Check if currently connected to AirPlay
+        guard player.isExternalPlaybackActive else {
+            result(FlutterError(code: "NOT_CONNECTED", message: "Not connected to AirPlay", details: nil))
+            return
+        }
+
+        // Disable external playback to disconnect from AirPlay
+        // This will stop sending video to the AirPlay device
+        player.usesExternalPlaybackWhileExternalScreenIsActive = false
+
+        // Re-enable it after a short delay so AirPlay can be used again later
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            player.usesExternalPlaybackWhileExternalScreenIsActive = true
+        }
+
+        result(nil)
+    }
+
+    func handleStartAirPlayDetection(result: @escaping FlutterResult) {
+        if #available(iOS 11.0, *) {
+            SharedPlayerManager.shared.startAirPlayRouteDetection()
+            result(nil)
+        } else {
+            result(FlutterError(code: "NOT_SUPPORTED", message: "AirPlay detection requires iOS 11.0+", details: nil))
+        }
+    }
+
+    func handleStopAirPlayDetection(result: @escaping FlutterResult) {
+        if #available(iOS 11.0, *) {
+            SharedPlayerManager.shared.stopAirPlayRouteDetection()
+            result(nil)
+        } else {
+            result(FlutterError(code: "NOT_SUPPORTED", message: "AirPlay detection requires iOS 11.0+", details: nil))
+        }
+    }
+
     func handleDispose(result: @escaping FlutterResult) {
+
+        // Remove time observer before releasing the player
+        if let timeObserver = timeObserver {
+            player?.removeTimeObserver(timeObserver)
+            self.timeObserver = nil
+        }
+
+        // Pause the player first
         player?.pause()
+
+        // Clean up DRM handler
+        drmHandler?.cleanup()
+        drmHandler = nil
+
+        // Clean up remote command ownership (transfer to another view if possible)
+        cleanupRemoteCommandOwnership()
 
         // Remove from shared manager if this is a shared player
         if let controllerId = controllerId {
             SharedPlayerManager.shared.removePlayer(for: controllerId)
-            print("Removed shared player for controller ID: \(controllerId)")
+        } else {
         }
 
+        // Clear local player reference
         player = nil
+
         sendEvent("stopped")
         result(nil)
     }
@@ -522,6 +614,8 @@ extension VideoPlayerView {
         
         // Dismiss the fullscreen player view controller if it exists
         if let fullscreenVC = fullscreenPlayerViewController {
+            // Release the video layer from the fullscreen VC before dismiss so the embedded view can show it again
+            fullscreenVC.player = nil
             fullscreenVC.dismiss(animated: true) {
                 // Clear the reference
                 self.fullscreenPlayerViewController = nil
@@ -529,6 +623,12 @@ extension VideoPlayerView {
                 // Resume playback if it was playing before
                 if wasPlaying {
                     self.player?.play()
+                }
+
+                // Re-bind the player to the embedded view on the next run loop after the transition has fully finished
+                DispatchQueue.main.async {
+                    self.playerViewController.player = nil
+                    self.playerViewController.player = self.player
                 }
 
                 self.sendEvent("fullscreenChange", data: ["isFullscreen": false])
@@ -563,66 +663,98 @@ extension VideoPlayerView {
         if #available(iOS 14.0, *) {
             // Check if video is loaded and ready
             guard let player = player, let currentItem = player.currentItem else {
-                print("❌ No video loaded for PiP")
                 result(FlutterError(code: "NO_VIDEO", message: "No video loaded.", details: nil))
                 return
             }
             
             guard currentItem.status == .readyToPlay else {
-                print("❌ Video not ready for PiP")
                 result(FlutterError(code: "NOT_READY", message: "Video is not ready to play.", details: nil))
                 return
             }
             
-            // Check if PiP is supported and allowed
-            guard playerViewController.allowsPictureInPicturePlayback else {
-                print("❌ PiP not allowed on player view controller")
-                result(FlutterError(code: "NOT_ALLOWED", message: "Picture-in-Picture is not allowed.", details: nil))
-                return
-            }
-            
+            // Check if PiP is supported on device
             guard AVPictureInPictureController.isPictureInPictureSupported() else {
-                print("❌ PiP not supported on this device")
                 result(FlutterError(code: "NOT_SUPPORTED", message: "Picture-in-Picture is not supported on this device.", details: nil))
                 return
             }
-            
-            print("🎬 Starting manual PiP")
-            
-            // Create PiP controller only for manual entry
-            // This is separate from automatic PiP which is handled by AVPlayerViewController
+
+
+            // Mark manual PiP as active for this controller
+            if let controllerIdValue = controllerId {
+                SharedPlayerManager.shared.setManualPiPActive(controllerIdValue, active: true)
+            }
+
+            // CRITICAL: Temporarily disable AVPlayerViewController's PiP while using custom controller
+            // This prevents the AVPlayerViewController from starting its own PiP simultaneously
+            // NOTE: We do this AFTER the checks, so it doesn't interfere with the next manual PiP attempt
+            playerViewController.allowsPictureInPicturePlayback = false
+
+            // Also disable automatic inline PiP
+            if #available(iOS 14.2, *) {
+                playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
+            }
+
+            // Get or create the PiP controller for this player layer
+            // Reuse existing controller if available, or create new one
             if pipController == nil {
                 if let playerLayer = findPlayerLayer() {
                     pipController = try? AVPictureInPictureController(playerLayer: playerLayer)
                     pipController?.delegate = self
-                    print("✅ Created PiP controller for manual entry")
                 } else {
-                    print("❌ Could not find player layer")
+                    if let controllerIdValue = controllerId {
+                        SharedPlayerManager.shared.setManualPiPActive(controllerIdValue, active: false)
+                    }
                     result(FlutterError(code: "NO_LAYER", message: "Could not find player layer", details: nil))
                     return
                 }
             }
-            
-            // Wait a moment for the controller to be ready
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                guard let self = self else {
-                    result(FlutterError(code: "DISPOSED", message: "View was disposed", details: nil))
-                    return
-                }
-                
-                if let pipController = self.pipController {
+
+            // Start PiP using the controller
+            // Wait for the controller to be ready with retries
+            var attempt = 0
+            let maxAttempts = 3
+            var resultSent = false
+
+            func sendResult(_ value: Any?) {
+                guard !resultSent else { return }
+                resultSent = true
+                result(value)
+            }
+
+            func tryStartPip() {
+                attempt += 1
+
+                if let pipController = pipController {
+
                     if pipController.isPictureInPicturePossible {
-                        print("🎬 Starting PiP now")
                         pipController.startPictureInPicture()
-                        result(true)
+                        sendResult(true)
+                    } else if attempt < maxAttempts {
+                        // Retry after a short delay
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                            guard self != nil else { return }
+                            tryStartPip()
+                        }
                     } else {
-                        print("❌ PiP not possible at this time")
-                        result(FlutterError(code: "PIP_NOT_POSSIBLE", message: "Picture-in-Picture is not possible at this time. Make sure the video is playing.", details: nil))
+                        if let controllerIdValue = controllerId {
+                            SharedPlayerManager.shared.setManualPiPActive(controllerIdValue, active: false)
+                            // Re-enable AVPlayerViewController PiP since we're not starting
+                            playerViewController.allowsPictureInPicturePlayback = true
+                        }
+                        sendResult(FlutterError(code: "PIP_NOT_POSSIBLE", message: "Picture-in-Picture is not possible at this time. Make sure the video is playing and loaded.", details: nil))
                     }
                 } else {
-                    print("❌ PiP controller not available")
-                    result(FlutterError(code: "NO_CONTROLLER", message: "PiP controller not available", details: nil))
+                    sendResult(FlutterError(code: "NO_CONTROLLER", message: "PiP controller is not available", details: nil))
                 }
+            }
+
+            // Start the first attempt after a brief delay
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                guard self != nil else {
+                    sendResult(FlutterError(code: "DISPOSED", message: "View was disposed", details: nil))
+                    return
+                }
+                tryStartPip()
             }
         } else {
             result(FlutterError(code: "NOT_SUPPORTED", message: "PiP requires iOS 14.0+", details: nil))
@@ -667,18 +799,112 @@ extension VideoPlayerView {
 
     func handleExitPictureInPicture(result: @escaping FlutterResult) {
         if #available(iOS 14.0, *) {
+            // First check this view's pipController
             if let pipController = pipController {
                 if pipController.isPictureInPictureActive {
                     pipController.stopPictureInPicture()
                     result(true)
-                } else {
-                    result(false)
+                    return
                 }
-            } else {
-                result(FlutterError(code: "PIP_NOT_INITIALIZED", message: "Picture-in-Picture controller not initialized", details: nil))
             }
+
+            // If this view doesn't have an active PiP, check other views for the same controller
+            // This handles the case where user navigated away from the detail screen back to list
+            if let controllerIdValue = controllerId {
+                let allViews = SharedPlayerManager.shared.findAllViewsForController(controllerIdValue)
+
+                for view in allViews {
+                    if let otherPipController = view.pipController,
+                       otherPipController.isPictureInPictureActive {
+                        otherPipController.stopPictureInPicture()
+                        result(true)
+                        return
+                    }
+                }
+            }
+
+            // Fallback: check SharedPlayerManager for a stored PiP controller
+            if let controllerIdValue = controllerId,
+               let storedPipController = SharedPlayerManager.shared.getActivePipController(for: controllerIdValue),
+               storedPipController.isPictureInPictureActive {
+                storedPipController.stopPictureInPicture()
+                result(true)
+                return
+            }
+
+            // Final fallback: auto-PiP managed by AVPlayerViewController —
+            // sync our state so the Dart side knows PiP ended.
+            if isPipCurrentlyActive {
+                isPipCurrentlyActive = false
+                sendEvent("pipStop", data: ["isPictureInPicture": false])
+                if let controllerIdValue = controllerId {
+                    SharedPlayerManager.shared.sendControllerEvent(
+                        "pipStop",
+                        data: ["isPictureInPicture": false],
+                        for: controllerIdValue
+                    )
+                    SharedPlayerManager.shared.clearActivePipController(for: controllerIdValue)
+                }
+                result(true)
+                return
+            }
+
+            result(false)
         } else {
             result(FlutterError(code: "NOT_SUPPORTED", message: "PiP not supported on this iOS version", details: nil))
+        }
+    }
+
+    func handleEnableAutomaticInlinePip(result: @escaping FlutterResult) {
+        if #available(iOS 14.2, *) {
+            // Check if video is loaded and playing
+            guard let player = player, let currentItem = player.currentItem else {
+                result(FlutterError(code: "NO_VIDEO", message: "No video loaded.", details: nil))
+                return
+            }
+
+            guard currentItem.status == .readyToPlay else {
+                result(FlutterError(code: "NOT_READY", message: "Video is not ready to play.", details: nil))
+                return
+            }
+
+            // Check if PiP is supported on device
+            guard AVPictureInPictureController.isPictureInPictureSupported() else {
+                result(FlutterError(code: "NOT_SUPPORTED", message: "Picture-in-Picture is not supported on this device.", details: nil))
+                return
+            }
+
+
+            // Enable automatic PiP on this view controller
+            playerViewController.canStartPictureInPictureAutomaticallyFromInline = true
+
+            // Also update the stored setting if this is a shared player
+            if let controllerIdValue = controllerId {
+                SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
+            } else {
+            }
+
+            result(true)
+        } else {
+            result(FlutterError(code: "NOT_SUPPORTED", message: "Automatic inline PiP requires iOS 14.2+", details: nil))
+        }
+    }
+
+    func handleDisableAutomaticInlinePip(result: @escaping FlutterResult) {
+        if #available(iOS 14.2, *) {
+
+            // Disable automatic PiP on this view controller
+            playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
+
+            // Also update the stored setting if this is a shared player
+            if let controllerIdValue = controllerId {
+                SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: false)
+            } else {
+            }
+
+            result(true)
+        } else {
+            result(FlutterError(code: "NOT_SUPPORTED", message: "Automatic inline PiP requires iOS 14.2+", details: nil))
         }
     }
 
@@ -693,26 +919,60 @@ extension VideoPlayerView {
         // Update Now Playing info every second
         let interval = CMTime(seconds: 0.5, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
         timeObserver = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] _ in
-            guard let self = self, let player = self.player else { return }
+            guard let self = self, let player = self.player, let currentItem = player.currentItem else { return }
 
             // Update Now Playing info
             self.updateNowPlayingPlaybackTime()
 
-            // Send timeUpdate event to Flutter
+            // Get current playback position
             let currentTime = player.currentTime()
-            let duration = player.currentItem?.duration ?? CMTime.zero
+            var positionSeconds = CMTimeGetSeconds(currentTime)
+            var durationSeconds: Double = 0.0
 
-            let positionSeconds = CMTimeGetSeconds(currentTime)
-            let durationSeconds = CMTimeGetSeconds(duration)
+            // For HLS live streams (indefinite duration), use seekableTimeRanges to get duration
+            // Regular VOD content (including VOD HLS) uses the item's duration
+            if currentItem.duration.isIndefinite {
+                // Live stream - use seekable ranges
+                let seekableRanges = currentItem.seekableTimeRanges
+                if !seekableRanges.isEmpty {
+                    // HLS live stream - calculate duration from seekable range
+                    let firstRange = seekableRanges.first!.timeRangeValue
+                    let lastRange = seekableRanges.last!.timeRangeValue
+
+                    let rangeStart = firstRange.start
+                    let rangeEnd = CMTimeAdd(lastRange.start, lastRange.duration)
+
+                    // Duration is the full seekable window
+                    durationSeconds = CMTimeGetSeconds(CMTimeSubtract(rangeEnd, rangeStart))
+
+                    // Position is relative to the start of the seekable window
+                    positionSeconds = CMTimeGetSeconds(CMTimeSubtract(currentTime, rangeStart))
+
+                    // Ensure position is within valid range
+                    if positionSeconds < 0 {
+                        positionSeconds = 0
+                    } else if positionSeconds > durationSeconds {
+                        positionSeconds = durationSeconds
+                    }
+                }
+            } else {
+                // Regular VOD content (including VOD HLS) - use item duration
+                let duration = currentItem.duration
+                durationSeconds = CMTimeGetSeconds(duration)
+            }
 
             // Get buffered position
             var bufferedSeconds = 0.0
-            if let timeRanges = player.currentItem?.loadedTimeRanges, !timeRanges.isEmpty {
+            let loadedRanges = currentItem.loadedTimeRanges
+            if !loadedRanges.isEmpty {
                 // Get the most recent buffered range
-                let bufferedRange = timeRanges.last!.timeRangeValue
+                let bufferedRange = loadedRanges.last!.timeRangeValue
                 let bufferedEnd = CMTimeAdd(bufferedRange.start, bufferedRange.duration)
                 bufferedSeconds = CMTimeGetSeconds(bufferedEnd)
             }
+
+            // Check if currently buffering
+            let isBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
 
             // Only send event if values are valid (not NaN or Infinity)
             if positionSeconds.isFinite && !positionSeconds.isNaN &&
@@ -724,9 +984,172 @@ extension VideoPlayerView {
                 self.sendEvent("timeUpdate", data: [
                     "position": position,
                     "duration": totalDuration,
-                    "bufferedPosition": bufferedPosition
+                    "bufferedPosition": bufferedPosition,
+                    "isBuffering": isBuffering
                 ])
             }
         }
+    }
+
+    /// Determines if a URL is an HLS stream
+    /// Checks for .m3u8 extension or common HLS patterns
+    private func isHlsUrl(_ url: URL) -> Bool {
+        let urlString = url.absoluteString.lowercased()
+
+        // Check for .m3u8 extension (most reliable indicator)
+        if urlString.contains(".m3u8") {
+            return true
+        }
+
+        // Check for /hls/ as a path segment (not substring to avoid false positives like "english")
+        if urlString.range(of: "/hls/", options: .regularExpression) != nil {
+            return true
+        }
+
+        // Check for manifest in path
+        if urlString.contains("manifest.m3u8") {
+            return true
+        }
+
+        return false
+    }
+
+    // MARK: - Subtitle Track Handling
+
+    func handleGetAvailableSubtitleTracks(result: @escaping FlutterResult) {
+        guard let playerItem = player?.currentItem,
+              let asset = playerItem.asset as? AVURLAsset else {
+            result([])
+            return
+        }
+
+        // Get all media selection options for legible characteristics (subtitles/captions)
+        guard let mediaSelectionGroup = asset.mediaSelectionGroup(forMediaCharacteristic: .legible) else {
+            result([])
+            return
+        }
+
+        var tracks: [[String: Any]] = []
+
+        // Get currently selected subtitle option
+        let currentSelection = playerItem.currentMediaSelection.selectedMediaOption(in: mediaSelectionGroup)
+
+        // Add each subtitle option
+        for (index, option) in mediaSelectionGroup.options.enumerated() {
+            let isSelected = option == currentSelection
+
+            // Get language code (e.g., "en", "es", "fr")
+            let languageCode = option.extendedLanguageTag ?? option.locale?.identifier ?? "unknown"
+
+            // Get display name (e.g., "English", "Spanish", "French")
+            var displayName = option.displayName
+
+            // If display name is empty, try to get it from locale
+            if displayName.isEmpty, let locale = option.locale {
+                displayName = Locale.current.localizedString(forIdentifier: locale.identifier) ?? languageCode
+            }
+
+            // If still empty, use language code
+            if displayName.isEmpty {
+                displayName = languageCode
+            }
+
+            let trackInfo: [String: Any] = [
+                "index": index,
+                "language": languageCode,
+                "displayName": displayName,
+                "isSelected": isSelected
+            ]
+
+            tracks.append(trackInfo)
+        }
+
+        result(tracks)
+    }
+
+    func handleSetMediaInfo(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let arguments = call.arguments as? [String: Any],
+              let mediaInfo = arguments["mediaInfo"] as? [String: Any]
+        else {
+            result(FlutterError(code: "INVALID_ARGS", message: "Invalid media info arguments", details: nil))
+            return
+        }
+
+        // Store locally
+        currentMediaInfo = mediaInfo
+
+        // Persist in SharedPlayerManager
+        if let controllerIdValue = controllerId {
+            SharedPlayerManager.shared.setMediaInfo(for: controllerIdValue, mediaInfo: mediaInfo)
+        }
+
+        // Update Now Playing info
+        setupNowPlayingInfo(mediaInfo: mediaInfo)
+
+        result(nil)
+    }
+
+    func handleSetSubtitleTrack(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let args = call.arguments as? [String: Any],
+              let trackInfo = args["track"] as? [String: Any],
+              let index = trackInfo["index"] as? Int else {
+            result(FlutterError(code: "INVALID_TRACK", message: "Invalid subtitle track data", details: nil))
+            return
+        }
+
+        guard let playerItem = player?.currentItem,
+              let asset = playerItem.asset as? AVURLAsset else {
+            result(FlutterError(code: "NO_PLAYER", message: "No player item available", details: nil))
+            return
+        }
+
+        guard let mediaSelectionGroup = asset.mediaSelectionGroup(forMediaCharacteristic: .legible) else {
+            result(FlutterError(code: "NO_SUBTITLES", message: "No subtitle tracks available", details: nil))
+            return
+        }
+
+        // Index -1 means disable subtitles
+        if index == -1 {
+            playerItem.select(nil, in: mediaSelectionGroup)
+            sendEvent("subtitleChange", data: [
+                "index": -1,
+                "language": "off",
+                "displayName": "Off",
+                "isSelected": false
+            ])
+            result(nil)
+            return
+        }
+
+        // Validate index
+        guard index >= 0 && index < mediaSelectionGroup.options.count else {
+            result(FlutterError(code: "INVALID_INDEX", message: "Invalid subtitle track index", details: nil))
+            return
+        }
+
+        // Select the subtitle option
+        let option = mediaSelectionGroup.options[index]
+        playerItem.select(option, in: mediaSelectionGroup)
+
+        let languageCode = option.extendedLanguageTag ?? option.locale?.identifier ?? "unknown"
+        var displayName = option.displayName
+
+        if displayName.isEmpty, let locale = option.locale {
+            displayName = Locale.current.localizedString(forIdentifier: locale.identifier) ?? languageCode
+        }
+
+        if displayName.isEmpty {
+            displayName = languageCode
+        }
+
+
+        sendEvent("subtitleChange", data: [
+            "index": index,
+            "language": languageCode,
+            "displayName": displayName,
+            "isSelected": true
+        ])
+
+        result(nil)
     }
 }

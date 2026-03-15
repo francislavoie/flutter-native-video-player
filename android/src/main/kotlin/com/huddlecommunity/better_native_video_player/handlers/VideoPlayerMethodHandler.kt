@@ -1,22 +1,30 @@
 package com.huddlecommunity.better_native_video_player.handlers
 
-import android.app.Activity
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.os.Build
 import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import com.huddlecommunity.better_native_video_player.manager.SharedPlayerManager
 
 /**
  * Handles method calls from Flutter for video player control
@@ -28,23 +36,115 @@ class VideoPlayerMethodHandler(
     private val player: ExoPlayer,
     private val eventHandler: VideoPlayerEventHandler,
     private val notificationHandler: VideoPlayerNotificationHandler,
-    private val updateMediaInfo: ((Map<String, Any>?) -> Unit)? = null
+    private val updateMediaInfo: ((Map<String, Any>?) -> Unit)? = null,
+    private val controllerId: Int? = null,
+    private val enableHDR: Boolean = false
 ) {
     companion object {
         private const val TAG = "VideoPlayerMethod"
     }
 
+    private val audioManager: AudioManager =
+        context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private var audioFocusRequest: AudioFocusRequest? = null
+    // Track whether we were playing before an audio focus loss so we can
+    // resume correctly when focus is regained (e.g., after a phone call).
+    private var wasPlayingBeforeFocusLoss = false
+
+    private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+        when (focusChange) {
+            AudioManager.AUDIOFOCUS_LOSS,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                wasPlayingBeforeFocusLoss = player.isPlaying
+                if (player.isPlaying) {
+                    player.pause()
+                    Log.d(TAG, "Audio focus lost (transient/permanent) — paused")
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                // Lower volume instead of pausing
+                player.volume = 0.3f
+                Log.d(TAG, "Audio focus ducking — lowered volume")
+            }
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                player.volume = 1.0f
+                if (wasPlayingBeforeFocusLoss) {
+                    player.play()
+                    wasPlayingBeforeFocusLoss = false
+                    Log.d(TAG, "Audio focus regained — resumed playback")
+                }
+            }
+        }
+    }
+
+    private val audioFocusPlaybackListener = object : Player.Listener {
+        override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying) {
+                requestAudioFocusForPlayback()
+            } else if (!player.playWhenReady) {
+                // Only abandon focus on true pause/stop (playWhenReady=false),
+                // not on buffering pauses where isPlaying briefly becomes false
+                // but the player intends to resume once buffer refills.
+                abandonAudioFocusForPlayback()
+            }
+        }
+    }
+
+    init {
+        player.addListener(audioFocusPlaybackListener)
+    }
+
+    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var availableQualities: List<Map<String, Any>> = emptyList()
-    private var isAutoQuality = false
-    private var lastBitrateCheck = 0L
-    private val bitrateCheckInterval = 5000L // 5 seconds
+    private var currentVideoIsHls = false // Track if current video is HLS for quality switching
+    private var masterHlsUrl: String? = null // Original master playlist URL for auto quality
+    private var currentHeaders: Map<String, String>? = null
+
+    // One-shot listener added during handleLoad; stored so it can be cleaned up on dispose
+    private var loadListener: Player.Listener? = null
 
     // Callback to handle fullscreen requests from Flutter
     var onFullscreenRequest: ((Boolean) -> Unit)? = null
 
-    // Callback to handle PiP requests from Flutter
-    var onEnterPictureInPictureRequest: (() -> Boolean)? = null
-    var onExitPictureInPictureRequest: (() -> Boolean)? = null
+    private fun requestAudioFocusForPlayback() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            if (audioFocusRequest == null) {
+                val attrs = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                    .build()
+                audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                    .setAudioAttributes(attrs)
+                    .setOnAudioFocusChangeListener(audioFocusChangeListener)
+                    .build()
+            }
+            audioFocusRequest?.let { request ->
+                val result = audioManager.requestAudioFocus(request)
+                if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                    Log.d(TAG, "Audio focus requested and granted")
+                }
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.requestAudioFocus(
+                audioFocusChangeListener,
+                AudioManager.STREAM_MUSIC,
+                AudioManager.AUDIOFOCUS_GAIN
+            )
+        }
+    }
+
+    private fun abandonAudioFocusForPlayback() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let { request ->
+                audioManager.abandonAudioFocusRequest(request)
+                audioFocusRequest = null
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(audioFocusChangeListener)
+        }
+    }
 
     /**
      * Handles incoming method calls from Flutter
@@ -59,15 +159,22 @@ class VideoPlayerMethodHandler(
             "seekTo" -> handleSeekTo(call, result)
             "setVolume" -> handleSetVolume(call, result)
             "setSpeed" -> handleSetSpeed(call, result)
+            "setLooping" -> handleSetLooping(call, result)
             "setQuality" -> handleSetQuality(call, result)
             "getAvailableQualities" -> handleGetAvailableQualities(result)
+            "getAvailableSubtitleTracks" -> handleGetAvailableSubtitleTracks(result)
+            "setSubtitleTrack" -> handleSetSubtitleTrack(call, result)
             "enterFullScreen" -> handleEnterFullScreen(result)
             "exitFullScreen" -> handleExitFullScreen(result)
-            "isPictureInPictureAvailable" -> handleIsPictureInPictureAvailable(result)
-            "enterPictureInPicture" -> handleEnterPictureInPicture(result)
-            "exitPictureInPicture" -> handleExitPictureInPicture(result)
             "isAirPlayAvailable" -> handleIsAirPlayAvailable(result)
             "showAirPlayPicker" -> handleShowAirPlayPicker(result)
+            "startAirPlayDetection" -> handleStartAirPlayDetection(result)
+            "stopAirPlayDetection" -> handleStopAirPlayDetection(result)
+            "disconnectAirPlay" -> handleDisconnectAirPlay(result)
+            "setMediaInfo" -> handleSetMediaInfo(call, result)
+            "configureForLivePlayback" -> handleConfigureForLivePlayback(call, result)
+            "getLatencyToLive" -> handleGetLatencyToLive(result)
+            "seekToLiveEdge" -> handleSeekToLiveEdge(result)
             "dispose" -> handleDispose(result)
             else -> result.notImplemented()
         }
@@ -87,7 +194,9 @@ class VideoPlayerMethodHandler(
 
         val autoPlay = args["autoPlay"] as? Boolean ?: false
         val headers = args["headers"] as? Map<String, String>
+        currentHeaders = headers
         val mediaInfo = args["mediaInfo"] as? Map<String, Any>
+        val drmConfig = args["drmConfig"] as? Map<*, *>
 
         // Store media info in the VideoPlayerView
         updateMediaInfo?.invoke(mediaInfo)
@@ -97,12 +206,43 @@ class VideoPlayerMethodHandler(
         }
 
         Log.d(TAG, "Loading video: $url (autoPlay: $autoPlay)")
+        Log.d(TAG, "Current player state - playbackState: ${player.playbackState}, duration: ${player.duration}, hasMedia: ${player.currentMediaItem != null}")
 
-        eventHandler.sendEvent("loading")
+        // Only send "loading" event if player is actually starting to load new media
+        // Don't send if player is already in IDLE state with no media loaded
+        // This prevents incorrect "loading" state when player is already idle
+        // Check: STATE_IDLE means no media is loaded, and duration < 0 means C.TIME_UNSET (no duration)
+        // Also check if player has a current media item - if not, it's truly idle with no media
+        val isPlayerIdleWithNoMedia = player.playbackState == Player.STATE_IDLE && 
+                                      player.duration < 0 && 
+                                      player.currentMediaItem == null
+        if (isPlayerIdleWithNoMedia) {
+            Log.d(TAG, "Player is already idle with no media (playbackState=${player.playbackState}, duration=${player.duration}, hasMedia=${player.currentMediaItem != null}), skipping loading event")
+            // Don't send loading event - the initial state should have already sent "idle"
+            // If initial state wasn't sent yet, it will be sent when EventChannel connects
+        } else {
+            // Player has media or is in a different state, send loading event
+            Log.d(TAG, "Sending loading event - player is not idle or has media")
+            eventHandler.sendEvent("loading")
+        }
 
-        // Build data source factory with custom headers if provided
-        val dataSourceFactory = DefaultHttpDataSource.Factory().apply {
-            headers?.let { setDefaultRequestProperties(it) }
+        // Determine if this is a local file or remote URL
+        val isLocalFile = url.startsWith("file://") || url.startsWith("/")
+        val isHls = isHlsUrl(url)
+        currentVideoIsHls = isHls // Track for quality switching
+        if (isHls) masterHlsUrl = url
+
+        Log.d(TAG, "Video source type - Local: $isLocalFile, HLS: $isHls")
+
+        // Build data source factory
+        // For remote URLs with custom headers, use HTTP-specific data source
+        // For local files, use DefaultDataSource which supports file:// URIs
+        val finalDataSourceFactory = if (!isLocalFile && headers != null) {
+            DefaultHttpDataSource.Factory().apply {
+                setDefaultRequestProperties(headers)
+            }
+        } else {
+            DefaultDataSource.Factory(context)
         }
 
         // Build MediaItem with metadata
@@ -118,16 +258,61 @@ class VideoPlayerMethodHandler(
             mediaItemBuilder.setMediaMetadata(metadataBuilder.build())
         }
 
+        // Configure DRM if provided
+        if (drmConfig != null) {
+            val drmType = drmConfig["type"] as? String
+            val licenseUrl = drmConfig["licenseUrl"] as? String
+            val drmHeaders = drmConfig["headers"] as? Map<String, String>
+
+            if (licenseUrl != null) {
+                val uuid = when (drmType?.lowercase()) {
+                    "widevine" -> C.WIDEVINE_UUID
+                    "clearkey", "aes-128" -> C.CLEARKEY_UUID
+                    else -> {
+                        Log.w(TAG, "Unknown DRM type: $drmType, defaulting to Widevine")
+                        C.WIDEVINE_UUID
+                    }
+                }
+
+                val drmBuilder = MediaItem.DrmConfiguration.Builder(uuid)
+                    .setLicenseUri(android.net.Uri.parse(licenseUrl))
+
+                if (drmHeaders != null) {
+                    drmBuilder.setLicenseRequestHeaders(drmHeaders)
+                }
+
+                mediaItemBuilder.setDrmConfiguration(drmBuilder.build())
+                Log.d(TAG, "DRM configured - Type: $drmType, License URL: $licenseUrl")
+            } else {
+                Log.w(TAG, "DRM config provided but licenseUrl is missing")
+            }
+        }
+
+        // Configure for low-latency live HLS
+        if (isHls) {
+            mediaItemBuilder.setLiveConfiguration(
+                MediaItem.LiveConfiguration.Builder()
+                    .setTargetOffsetMs(6_000)
+                    .setMinOffsetMs(3_000)
+                    .setMaxOffsetMs(15_000)
+                    .setMinPlaybackSpeed(0.97f)
+                    .setMaxPlaybackSpeed(1.03f)
+                    .build()
+            )
+        }
+
         val mediaItem = mediaItemBuilder.build()
 
         // Create appropriate MediaSource based on URL type
-        val mediaSource: MediaSource = if (url.contains(".m3u8")) {
+        val mediaSource: MediaSource = if (isHls) {
             // HLS stream
-            HlsMediaSource.Factory(dataSourceFactory)
+            Log.d(TAG, "Creating HLS media source")
+            HlsMediaSource.Factory(finalDataSourceFactory)
                 .createMediaSource(mediaItem)
         } else {
-            // Progressive download (MP4, etc.)
-            ProgressiveMediaSource.Factory(dataSourceFactory)
+            // Progressive download/playback (MP4, local files, etc.)
+            Log.d(TAG, "Creating progressive media source")
+            ProgressiveMediaSource.Factory(finalDataSourceFactory)
                 .createMediaSource(mediaItem)
         }
 
@@ -135,44 +320,86 @@ class VideoPlayerMethodHandler(
         player.setMediaSource(mediaSource)
         player.prepare()
 
-        // Set autoplay
-        if (autoPlay) {
-            player.play()
+        // Configure HDR settings for ExoPlayer using TrackSelectionParameters
+        if (!enableHDR) {
+            Log.d(TAG, "🎨 HDR disabled - ExoPlayer will use automatic tone-mapping for HDR content")
+            // Note: ExoPlayer automatically tone-maps HDR content to SDR on devices
+            // that don't support HDR or when the display doesn't support it.
+            //
+            // For more explicit control over track selection to avoid HDR tracks entirely,
+            // we would need to:
+            // 1. Implement a custom TrackSelector that filters based on Format.colorInfo.colorTransfer
+            // 2. Check for COLOR_TRANSFER_HLG, COLOR_TRANSFER_ST2084 (HDR10), etc.
+            // 3. Configure this at player creation time with a DefaultTrackSelector.Builder
+            //
+            // However, this is complex and may break adaptive streaming benefits.
+            // ExoPlayer's automatic tone-mapping is generally sufficient for most use cases.
+            //
+            // See: https://github.com/androidx/media/issues/1074
+        } else {
+            Log.d(TAG, "🎨 HDR enabled - allowing native HDR playback")
         }
 
         // Fetch qualities asynchronously for HLS streams
         if (url.contains(".m3u8")) {
-            CoroutineScope(Dispatchers.Main).launch {
+            scope.launch {
                 availableQualities = VideoPlayerQualityHandler.fetchHLSQualities(url)
                 Log.d(TAG, "Fetched ${availableQualities.size} qualities")
+
+                // Store in SharedPlayerManager if this is a shared player
+                if (controllerId != null) {
+                    SharedPlayerManager.setQualities(controllerId, availableQualities)
+                }
+
+                // Send qualityChange event to notify Flutter that qualities are loaded
+                if (availableQualities.isNotEmpty()) {
+                    val defaultQuality = availableQualities.first()
+                    eventHandler.sendEvent("qualityChange", mapOf(
+                        "url" to (defaultQuality["url"] ?: ""),
+                        "label" to (defaultQuality["label"] ?: "Auto"),
+                        "isAuto" to (defaultQuality["isAuto"] ?: true)
+                    ))
+                    Log.d(TAG, "Sent qualityChange event with ${availableQualities.size} available qualities")
+                }
             }
         }
 
         // NOTE: Media session will be set up when playback starts (in VideoPlayerObserver)
         // This ensures the correct video's metadata is displayed even when switching between videos
 
+        // Remove any previous load listener before adding a new one
+        loadListener?.let { player.removeListener(it) }
+
         // Wait for player to be ready
-        val listener = object : androidx.media3.common.Player.Listener {
+        val listener = object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == androidx.media3.common.Player.STATE_READY) {
+                if (playbackState == Player.STATE_READY) {
                     eventHandler.sendEvent("loaded")
                     player.removeListener(this)
-                    
-                    // Check and send PiP availability after video is loaded
-                    checkAndSendPipAvailability()
-                    
+                    loadListener = null
+
                     // Send AirPlay availability (always false on Android)
                     checkAndSendAirPlayAvailability()
-                    
+
+                    // Auto play if requested - MUST be done after player is ready
+                    if (autoPlay) {
+                        Log.d(TAG, "Auto-playing video after ready")
+                        requestAudioFocusForPlayback()
+                        player.play()
+                        // Play event will be sent automatically by VideoPlayerObserver
+                    }
+
                     result.success(null)
                 }
             }
 
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 player.removeListener(this)
+                loadListener = null
                 result.error("LOAD_ERROR", error.message ?: "Unknown error", null)
             }
         }
+        loadListener = listener
         player.addListener(listener)
     }
 
@@ -180,6 +407,7 @@ class VideoPlayerMethodHandler(
      * Starts playback
      */
     private fun handlePlay(result: MethodChannel.Result) {
+        requestAudioFocusForPlayback()
         player.play()
         result.success(null)
     }
@@ -189,6 +417,7 @@ class VideoPlayerMethodHandler(
      */
     private fun handlePause(result: MethodChannel.Result) {
         player.pause()
+        abandonAudioFocusForPlayback()
         result.success(null)
     }
 
@@ -231,66 +460,86 @@ class VideoPlayerMethodHandler(
     }
 
     /**
-     * Changes video quality (for HLS streams)
+     * Sets whether the video should loop
+     */
+    private fun handleSetLooping(call: MethodCall, result: MethodChannel.Result) {
+        val args = call.arguments as? Map<*, *>
+        val looping = args?.get("looping") as? Boolean
+        if (looping != null) {
+            player.repeatMode = if (looping) {
+                androidx.media3.common.Player.REPEAT_MODE_ONE
+            } else {
+                androidx.media3.common.Player.REPEAT_MODE_OFF
+            }
+            Log.d(TAG, "Looping set to: $looping")
+        }
+        result.success(null)
+    }
+
+    /**
+     * Changes video quality (for HLS streams).
+     *
+     * Uses DefaultTrackSelector constraints instead of replacing the HLS
+     * source. This lets ExoPlayer switch variants within the existing
+     * master playlist at the next segment boundary — no black-screen
+     * flash or loading spinner.
      */
     private fun handleSetQuality(call: MethodCall, result: MethodChannel.Result) {
+        if (!currentVideoIsHls) {
+            result.error("NOT_HLS", "Quality switching is only available for HLS streams", null)
+            return
+        }
+
         val args = call.arguments as? Map<*, *>
         val qualityInfo = args?.get("quality") as? Map<*, *>
-        
+
         if (qualityInfo == null) {
             result.error("INVALID_QUALITY", "Invalid quality data", null)
             return
         }
 
+        val trackSelector = player.trackSelector as? DefaultTrackSelector
+        if (trackSelector == null) {
+            result.error("NO_TRACK_SELECTOR", "DefaultTrackSelector not available", null)
+            return
+        }
+
         val isAuto = qualityInfo["isAuto"] as? Boolean ?: false
-        isAutoQuality = isAuto
 
         if (isAuto) {
-            // Start with the middle quality for auto mode
-            val midIndex = (availableQualities.size / 2 - 1).coerceAtLeast(0)
-            if (midIndex >= availableQualities.size) {
-                result.error("NO_QUALITIES", "No qualities available", null)
-                return
-            }
+            // Remove constraints — ExoPlayer uses native ABR
+            trackSelector.setParameters(
+                trackSelector.buildUponParameters()
+                    .clearVideoSizeConstraints()
+                    .setMaxVideoBitrate(Int.MAX_VALUE)
+            )
 
-            val initialQuality = availableQualities[midIndex]
-            switchToQuality(initialQuality, result)
+            eventHandler.sendEvent("qualityChange", mapOf(
+                "url" to (masterHlsUrl ?: ""),
+                "label" to "Auto",
+                "isAuto" to true
+            ))
 
-            // Start monitoring quality
-            startQualityMonitoring()
+            result.success(null)
         } else {
             val url = qualityInfo["url"] as? String
             val label = qualityInfo["label"] as? String
+            val bitrate = qualityInfo["bitrate"] as? Int ?: Int.MAX_VALUE
+            val width = qualityInfo["width"] as? Int ?: Int.MAX_VALUE
+            val height = qualityInfo["height"] as? Int ?: Int.MAX_VALUE
 
-            if (url == null) {
-                result.error("INVALID_QUALITY", "Quality URL is required", null)
-                return
-            }
-
-            eventHandler.sendEvent("loading")
-
-            // Save current state
-            val wasPlaying = player.isPlaying
-            val currentPosition = player.currentPosition
-
-            // Build new media source
-            val dataSourceFactory = DefaultHttpDataSource.Factory()
-            val mediaItem = MediaItem.fromUri(url)
-            val mediaSource = HlsMediaSource.Factory(dataSourceFactory)
-                .createMediaSource(mediaItem)
-
-            // Switch to new quality
-            player.setMediaSource(mediaSource)
-            player.prepare()
-            player.seekTo(currentPosition)
-            
-            // Only resume playback if it was playing before
-            if (wasPlaying) {
-                player.play()
-            }
+            // Pin to this quality — ExoPlayer switches at the next
+            // segment boundary without interrupting playback.
+            trackSelector.setParameters(
+                trackSelector.buildUponParameters()
+                    .setMinVideoSize(width, height)
+                    .setMaxVideoSize(width, height)
+                    .setMinVideoBitrate(bitrate)
+                    .setMaxVideoBitrate(bitrate)
+            )
 
             eventHandler.sendEvent("qualityChange", mapOf(
-                "url" to url,
+                "url" to (url ?: ""),
                 "label" to (label ?: ""),
                 "isAuto" to false
             ))
@@ -299,59 +548,55 @@ class VideoPlayerMethodHandler(
         }
     }
 
-    private fun startQualityMonitoring() {
-        // Quality monitoring is simplified for now
-        // In a production app, you would implement bandwidth monitoring here
-        Log.d(TAG, "Auto quality monitoring enabled (simplified implementation)")
-    }
-
-    private fun switchToQuality(quality: Map<String, Any>, result: MethodChannel.Result?) {
-        val url = quality["url"] as? String ?: return
-        val label = quality["label"] as? String ?: "Unknown"
-
-        eventHandler.sendEvent("loading")
-
-        // Save current state
-        val wasPlaying = player.isPlaying
-        val currentPosition = player.currentPosition
-
-        // Build new media source
-        val dataSourceFactory = DefaultHttpDataSource.Factory()
-        val mediaItem = MediaItem.fromUri(url)
-        val mediaSource = HlsMediaSource.Factory(dataSourceFactory)
-            .createMediaSource(mediaItem)
-
-        // Switch to new quality
-        player.setMediaSource(mediaSource)
-        player.prepare()
-        player.seekTo(currentPosition)
-
-        // Only resume playback if it was playing before
-        if (wasPlaying) {
-            player.play()
-        }
-
-        eventHandler.sendEvent("qualityChange", mapOf(
-            "url" to url,
-            "label" to label,
-            "isAuto" to isAutoQuality
-        ))
-
-        result?.success(null)
-    }
 
     /**
      * Returns available video qualities
      */
     private fun handleGetAvailableQualities(result: MethodChannel.Result) {
-        result.success(availableQualities)
+        // First check if we have qualities in this instance
+        if (availableQualities.isNotEmpty()) {
+            result.success(availableQualities)
+        } else if (controllerId != null) {
+            // If instance is empty but cache has qualities, restore them
+            val cachedQualities = SharedPlayerManager.getQualities(controllerId)
+            if (cachedQualities != null && cachedQualities.isNotEmpty()) {
+                availableQualities = cachedQualities
+                Log.d(TAG, "🔄 Restored ${cachedQualities.size} qualities from cache for controller $controllerId")
+                result.success(cachedQualities)
+            } else {
+                result.success(availableQualities)
+            }
+        } else {
+            result.success(availableQualities)
+        }
+    }
+
+    /**
+     * Cleans up listeners and coroutine scope without removing the shared player.
+     * Called from VideoPlayerView.dispose() to prevent leaks when the platform
+     * view is destroyed without a Flutter-initiated "dispose" method call.
+     */
+    fun cleanup() {
+        scope.cancel()
+        loadListener?.let { player.removeListener(it) }
+        loadListener = null
+        player.removeListener(audioFocusPlaybackListener)
+        abandonAudioFocusForPlayback()
     }
 
     /**
      * Disposes the player
      */
     private fun handleDispose(result: MethodChannel.Result) {
+        cleanup()
         player.stop()
+
+        // Remove from shared manager if this is a shared player
+        if (controllerId != null) {
+            SharedPlayerManager.removePlayer(context, controllerId)
+            Log.d(TAG, "Removed shared player for controller ID: $controllerId")
+        }
+
         eventHandler.sendEvent("stopped")
         result.success(null)
     }
@@ -397,70 +642,33 @@ class VideoPlayerMethodHandler(
     }
 
     /**
-     * Checks if Picture-in-Picture is available on this device
-     * PiP is available on Android 8.0 (API 26) and above
+     * Starts AirPlay device detection (iOS only - no-op on Android)
+     * AirPlay is an Apple technology and not available on Android
      */
-    private fun handleIsPictureInPictureAvailable(result: MethodChannel.Result) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // Check if we have an Activity context
-            val activity = context as? Activity
-            if (activity != null) {
-                // Check if the device supports PiP mode
-                val hasPipFeature = activity.packageManager.hasSystemFeature(
-                    android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE
-                )
-                Log.d(TAG, "PiP availability checked - supported: $hasPipFeature")
-                result.success(hasPipFeature)
-            } else {
-                Log.d(TAG, "PiP availability checked - no Activity context")
-                result.success(false)
-            }
-        } else {
-            Log.d(TAG, "PiP availability checked - requires Android 8.0+")
-            result.success(false)
-        }
+    private fun handleStartAirPlayDetection(result: MethodChannel.Result) {
+        Log.d(TAG, "AirPlay detection start requested but not supported on Android")
+        // Simply return success - AirPlay is not available on Android
+        result.success(null)
     }
 
     /**
-     * Enters Picture-in-Picture mode
-     * Only works on Android 8.0 (API 26) and above
+     * Stops AirPlay device detection (iOS only - no-op on Android)
+     * AirPlay is an Apple technology and not available on Android
      */
-    private fun handleEnterPictureInPicture(result: MethodChannel.Result) {
-        Log.d(TAG, "Flutter requested enter PiP")
-        val success = onEnterPictureInPictureRequest?.invoke() ?: false
-        result.success(success)
+    private fun handleStopAirPlayDetection(result: MethodChannel.Result) {
+        Log.d(TAG, "AirPlay detection stop requested but not supported on Android")
+        // Simply return success - AirPlay is not available on Android
+        result.success(null)
     }
 
     /**
-     * Exits Picture-in-Picture mode
-     * Only works on Android 8.0 (API 26) and above
+     * Disconnects from AirPlay device (iOS only - no-op on Android)
+     * AirPlay is an Apple technology and not available on Android
      */
-    private fun handleExitPictureInPicture(result: MethodChannel.Result) {
-        Log.d(TAG, "Flutter requested exit PiP")
-        val success = onExitPictureInPictureRequest?.invoke() ?: false
-        result.success(success)
-    }
-
-    /**
-     * Checks if PiP is available and sends an event to Flutter
-     */
-    private fun checkAndSendPipAvailability() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val activity = context as? Activity
-            if (activity != null) {
-                val hasPipFeature = activity.packageManager.hasSystemFeature(
-                    android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE
-                )
-                Log.d(TAG, "🎬 PiP availability check: $hasPipFeature")
-                eventHandler.sendEvent("pipAvailabilityChanged", mapOf("isAvailable" to hasPipFeature))
-            } else {
-                Log.d(TAG, "🎬 PiP availability check: false (no activity)")
-                eventHandler.sendEvent("pipAvailabilityChanged", mapOf("isAvailable" to false))
-            }
-        } else {
-            Log.d(TAG, "🎬 PiP availability check: false (API < 26)")
-            eventHandler.sendEvent("pipAvailabilityChanged", mapOf("isAvailable" to false))
-        }
+    private fun handleDisconnectAirPlay(result: MethodChannel.Result) {
+        Log.d(TAG, "AirPlay disconnect requested but not supported on Android")
+        // Simply return success - AirPlay is not available on Android
+        result.success(null)
     }
 
     /**
@@ -470,5 +678,203 @@ class VideoPlayerMethodHandler(
     private fun checkAndSendAirPlayAvailability() {
         Log.d(TAG, "📡 AirPlay availability check: false (Android)")
         eventHandler.sendEvent("airPlayAvailabilityChanged", mapOf("isAvailable" to false))
+    }
+
+    /**
+     * Determines if a URL is an HLS stream
+     * Checks for .m3u8 extension or common HLS patterns
+     */
+    private fun isHlsUrl(url: String): Boolean {
+        val lowerUrl = url.lowercase()
+        // Check for .m3u8 extension (most reliable indicator)
+        if (lowerUrl.contains(".m3u8")) {
+            return true
+        }
+        // Check for /hls/ as a path segment
+        if (lowerUrl.contains("/hls/")) {
+            return true
+        }
+        return false
+    }
+
+    // MARK: - Subtitle Track Handling
+
+    /**
+     * Gets available subtitle tracks from the current player
+     */
+    private fun handleGetAvailableSubtitleTracks(result: MethodChannel.Result) {
+        try {
+            val tracks = mutableListOf<Map<String, Any>>()
+
+            // Get the current tracks from the player
+            val currentTracks = player.currentTracks
+
+            // Get track selection parameters to find the selected track
+            val trackSelectionParameters = player.trackSelectionParameters
+
+            // Iterate through all track groups
+            for (groupIndex in 0 until currentTracks.groups.size) {
+                val group = currentTracks.groups[groupIndex]
+
+                // Only process text (subtitle) tracks
+                if (group.type == C.TRACK_TYPE_TEXT) {
+                    // Iterate through all tracks in this group
+                    for (trackIndex in 0 until group.length) {
+                        val format = group.getTrackFormat(trackIndex)
+                        val isSelected = group.isTrackSelected(trackIndex)
+
+                        // Get language code (e.g., "en", "es", "fr")
+                        val languageCode = format.language ?: "unknown"
+
+                        // Get display name (use label if available, otherwise language code)
+                        val displayName = format.label?.takeIf { it.isNotEmpty() }
+                            ?: languageCode.let { code ->
+                                // Try to get localized language name
+                                try {
+                                    val locale = java.util.Locale(code)
+                                    locale.getDisplayLanguage(java.util.Locale.getDefault())
+                                        .takeIf { it.isNotEmpty() } ?: code
+                                } catch (e: Exception) {
+                                    code
+                                }
+                            }
+
+                        val trackInfo = mapOf(
+                            "index" to trackIndex,
+                            "language" to languageCode,
+                            "displayName" to displayName,
+                            "isSelected" to isSelected
+                        )
+
+                        tracks.add(trackInfo)
+                        Log.d(TAG, "📝 Found subtitle track: $displayName ($languageCode) - Selected: $isSelected")
+                    }
+                }
+            }
+
+            Log.d(TAG, "📝 Total subtitle tracks found: ${tracks.size}")
+            result.success(tracks)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting subtitle tracks: ${e.message}", e)
+            result.success(emptyList<Map<String, Any>>())
+        }
+    }
+
+    /**
+     * Sets the subtitle track
+     */
+    private fun handleSetSubtitleTrack(call: MethodCall, result: MethodChannel.Result) {
+        try {
+            val args = call.arguments as? Map<*, *>
+            val trackInfo = args?.get("track") as? Map<*, *>
+            val index = trackInfo?.get("index") as? Int
+
+            if (index == null) {
+                result.error("INVALID_TRACK", "Invalid subtitle track data", null)
+                return
+            }
+
+            // Index -1 means disable subtitles
+            if (index == -1) {
+                Log.d(TAG, "📝 Disabling subtitles")
+
+                // Disable text track selection
+                val newParameters = player.trackSelectionParameters
+                    .buildUpon()
+                    .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+                    .build()
+
+                player.trackSelectionParameters = newParameters
+
+                eventHandler.sendEvent("subtitleChange", mapOf(
+                    "index" to -1,
+                    "language" to "off",
+                    "displayName" to "Off",
+                    "isSelected" to false
+                ))
+
+                result.success(null)
+                return
+            }
+
+            // Enable text tracks first
+            var parametersBuilder = player.trackSelectionParameters
+                .buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
+
+            // Find the track format for the requested index
+            val currentTracks = player.currentTracks
+            var trackFound = false
+            var selectedLanguage = "unknown"
+            var selectedDisplayName = "Unknown"
+
+            for (groupIndex in 0 until currentTracks.groups.size) {
+                val group = currentTracks.groups[groupIndex]
+
+                if (group.type == C.TRACK_TYPE_TEXT && index < group.length) {
+                    val format = group.getTrackFormat(index)
+                    selectedLanguage = format.language ?: "unknown"
+                    selectedDisplayName = format.label?.takeIf { it.isNotEmpty() }
+                        ?: selectedLanguage
+
+                    // Set preferred text language to the selected track's language
+                    parametersBuilder = parametersBuilder
+                        .setPreferredTextLanguage(selectedLanguage)
+
+                    trackFound = true
+                    break
+                }
+            }
+
+            if (!trackFound) {
+                result.error("INVALID_INDEX", "Invalid subtitle track index", null)
+                return
+            }
+
+            player.trackSelectionParameters = parametersBuilder.build()
+
+            Log.d(TAG, "📝 Selected subtitle track: $selectedDisplayName ($selectedLanguage)")
+
+            eventHandler.sendEvent("subtitleChange", mapOf(
+                "index" to index,
+                "language" to selectedLanguage,
+                "displayName" to selectedDisplayName,
+                "isSelected" to true
+            ))
+
+            result.success(null)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting subtitle track: ${e.message}", e)
+            result.error("ERROR", "Failed to set subtitle track: ${e.message}", null)
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun handleSetMediaInfo(call: MethodCall, result: MethodChannel.Result) {
+        val args = call.arguments as? Map<*, *>
+        val mediaInfo = args?.get("mediaInfo") as? Map<String, Any>
+        updateMediaInfo?.invoke(mediaInfo)
+        if (mediaInfo != null) {
+            notificationHandler.updateMediaMetadata(mediaInfo)
+        }
+        result.success(null)
+    }
+
+    private fun handleConfigureForLivePlayback(call: MethodCall, result: MethodChannel.Result) {
+        result.success(null)
+    }
+
+    private fun handleGetLatencyToLive(result: MethodChannel.Result) {
+        val offsetMs = player.currentLiveOffset
+        if (offsetMs == C.TIME_UNSET) {
+            result.success(null)
+        } else {
+            result.success(offsetMs / 1000.0)
+        }
+    }
+
+    private fun handleSeekToLiveEdge(result: MethodChannel.Result) {
+        player.seekToDefaultPosition()
+        result.success(null)
     }
 }

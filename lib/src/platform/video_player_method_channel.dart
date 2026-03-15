@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../models/native_video_player_quality.dart';
+import '../models/native_video_player_subtitle_track.dart';
 
 /// Handles all method channel communication with the native platform
 class VideoPlayerMethodChannel {
@@ -17,6 +18,7 @@ class VideoPlayerMethodChannel {
     required bool autoPlay,
     Map<String, String>? headers,
     Map<String, dynamic>? mediaInfo,
+    Map<String, dynamic>? drmConfig,
   }) async {
     final Map<String, Object> params = <String, Object>{
       'url': url,
@@ -30,6 +32,10 @@ class VideoPlayerMethodChannel {
 
     if (mediaInfo != null) {
       params['mediaInfo'] = mediaInfo;
+    }
+
+    if (drmConfig != null) {
+      params['drmConfig'] = drmConfig;
     }
 
     await _methodChannel.invokeMethod<void>('load', params);
@@ -93,6 +99,18 @@ class VideoPlayerMethodChannel {
     }
   }
 
+  /// Sets whether the video should loop
+  Future<void> setLooping(bool looping) async {
+    try {
+      await _methodChannel.invokeMethod<void>('setLooping', <String, Object>{
+        'viewId': primaryPlatformViewId,
+        'looping': looping,
+      });
+    } catch (e) {
+      debugPrint('Error calling setLooping: $e');
+    }
+  }
+
   /// Sets the video quality
   Future<void> setQuality(NativeVideoPlayerQuality quality) async {
     try {
@@ -127,6 +145,87 @@ class VideoPlayerMethodChannel {
     } catch (e) {
       debugPrint('Error fetching qualities: $e');
       return <NativeVideoPlayerQuality>[];
+    }
+  }
+
+  /// Configures the player for live playback (low-latency tuning)
+  Future<void> configureForLivePlayback({double bufferDuration = 2.0}) async {
+    try {
+      await _methodChannel.invokeMethod<void>(
+        'configureForLivePlayback',
+        <String, Object>{
+          'viewId': primaryPlatformViewId,
+          'bufferDuration': bufferDuration,
+        },
+      );
+    } catch (e) {
+      debugPrint('Error calling configureForLivePlayback: $e');
+    }
+  }
+
+  /// Gets the latency to live edge in seconds, or null if unavailable
+  Future<double?> getLatencyToLive() async {
+    try {
+      final dynamic result = await _methodChannel.invokeMethod<dynamic>(
+        'getLatencyToLive',
+        <String, Object>{'viewId': primaryPlatformViewId},
+      );
+      return result as double?;
+    } catch (e) {
+      debugPrint('Error calling getLatencyToLive: $e');
+      return null;
+    }
+  }
+
+  /// Seeks to the live edge of a live HLS stream
+  Future<void> seekToLiveEdge() async {
+    try {
+      await _methodChannel.invokeMethod<void>(
+        'seekToLiveEdge',
+        <String, Object>{'viewId': primaryPlatformViewId},
+      );
+    } catch (e) {
+      debugPrint('Error calling seekToLiveEdge: $e');
+    }
+  }
+
+  /// Gets available subtitle tracks
+  Future<List<NativeVideoPlayerSubtitleTrack>>
+  getAvailableSubtitleTracks() async {
+    try {
+      final dynamic result = await _methodChannel.invokeMethod<dynamic>(
+        'getAvailableSubtitleTracks',
+        <String, Object>{'viewId': primaryPlatformViewId},
+      );
+      if (result is List) {
+        final tracks = result
+            .map(
+              (dynamic e) => NativeVideoPlayerSubtitleTrack.fromMap(
+                e as Map<dynamic, dynamic>,
+              ),
+            )
+            .toList();
+        return tracks;
+      }
+      debugPrint('No subtitle tracks found in result');
+      return <NativeVideoPlayerSubtitleTrack>[];
+    } catch (e) {
+      debugPrint('Error fetching subtitle tracks: $e');
+      return <NativeVideoPlayerSubtitleTrack>[];
+    }
+  }
+
+  /// Sets the subtitle track
+  /// Pass a track with index -1 or use NativeVideoPlayerSubtitleTrack.off() to disable subtitles
+  Future<void> setSubtitleTrack(NativeVideoPlayerSubtitleTrack track) async {
+    try {
+      final Map<String, Object> params = <String, Object>{
+        'viewId': primaryPlatformViewId,
+        'track': track.toMap(),
+      };
+      await _methodChannel.invokeMethod<void>('setSubtitleTrack', params);
+    } catch (e) {
+      debugPrint('Error calling setSubtitleTrack: $e');
     }
   }
 
@@ -168,6 +267,34 @@ class VideoPlayerMethodChannel {
       return result == true;
     } catch (e) {
       debugPrint('Error calling exitPictureInPicture: $e');
+      return false;
+    }
+  }
+
+  /// Enables automatic inline Picture-in-Picture mode (iOS 14.2+)
+  Future<bool> enableAutomaticInlinePip() async {
+    try {
+      final dynamic result = await _methodChannel.invokeMethod<dynamic>(
+        'enableAutomaticInlinePip',
+        <String, Object>{'viewId': primaryPlatformViewId},
+      );
+      return result == true;
+    } catch (e) {
+      debugPrint('Error calling enableAutomaticInlinePip: $e');
+      return false;
+    }
+  }
+
+  /// Disables automatic inline Picture-in-Picture mode (iOS 14.2+)
+  Future<bool> disableAutomaticInlinePip() async {
+    try {
+      final dynamic result = await _methodChannel.invokeMethod<dynamic>(
+        'disableAutomaticInlinePip',
+        <String, Object>{'viewId': primaryPlatformViewId},
+      );
+      return result == true;
+    } catch (e) {
+      debugPrint('Error calling disableAutomaticInlinePip: $e');
       return false;
     }
   }
@@ -231,6 +358,96 @@ class VideoPlayerMethodChannel {
       );
     } catch (e) {
       debugPrint('Error calling showAirPlayPicker: $e');
+    }
+  }
+
+  /// Disconnects from AirPlay (iOS only)
+  ///
+  /// Stops sending video to the currently connected AirPlay device.
+  /// AirPlay can be reconnected again later by the user.
+  ///
+  /// Throws if not currently connected to AirPlay.
+  Future<void> disconnectAirPlay() async {
+    try {
+      await _methodChannel.invokeMethod<void>(
+        'disconnectAirPlay',
+        <String, Object>{'viewId': primaryPlatformViewId},
+      );
+    } catch (e) {
+      debugPrint('Error calling disconnectAirPlay: $e');
+      rethrow;
+    }
+  }
+
+  /// Starts AirPlay device detection (iOS only)
+  ///
+  /// Begins monitoring for available AirPlay devices. This should be called
+  /// when you want to start searching for AirPlay devices.
+  ///
+  /// Note: This is a global operation that affects the entire app.
+  Future<void> startAirPlayDetection() async {
+    try {
+      await _methodChannel.invokeMethod<void>(
+        'startAirPlayDetection',
+        <String, Object>{'viewId': primaryPlatformViewId},
+      );
+    } catch (e) {
+      debugPrint('Error calling startAirPlayDetection: $e');
+      rethrow;
+    }
+  }
+
+  /// Stops AirPlay device detection (iOS only)
+  ///
+  /// Stops monitoring for available AirPlay devices. This should be called
+  /// when you no longer need to search for AirPlay devices.
+  ///
+  /// Note: This is a global operation that affects the entire app.
+  Future<void> stopAirPlayDetection() async {
+    try {
+      await _methodChannel.invokeMethod<void>(
+        'stopAirPlayDetection',
+        <String, Object>{'viewId': primaryPlatformViewId},
+      );
+    } catch (e) {
+      debugPrint('Error calling stopAirPlayDetection: $e');
+      rethrow;
+    }
+  }
+
+  /// Asks the native side to ensure the player surface is connected to this view.
+  /// Called when reconnecting after all platform views were disposed (e.g. list→detail→back).
+  Future<void> ensureSurfaceConnected() async {
+    try {
+      await _methodChannel.invokeMethod<void>(
+        'ensureSurfaceConnected',
+        <String, Object>{'viewId': primaryPlatformViewId},
+      );
+    } catch (e) {
+      debugPrint('Error calling ensureSurfaceConnected: $e');
+    }
+  }
+
+  /// Updates the media info (Now Playing) for the player
+  Future<void> setMediaInfo(Map<String, dynamic> mediaInfo) async {
+    try {
+      await _methodChannel.invokeMethod<void>('setMediaInfo', <String, Object>{
+        'viewId': primaryPlatformViewId,
+        'mediaInfo': mediaInfo,
+      });
+    } catch (e) {
+      debugPrint('Error calling setMediaInfo: $e');
+    }
+  }
+
+  /// Disposes the native player resources
+  Future<void> dispose() async {
+    try {
+      await _methodChannel.invokeMethod<void>('dispose', <String, Object>{
+        'viewId': primaryPlatformViewId,
+      });
+    } catch (e) {
+      debugPrint('Error calling dispose: $e');
     }
   }
 }

@@ -2,12 +2,10 @@ package com.huddlecommunity.better_native_video_player
 
 import android.app.Activity
 import android.app.Dialog
-import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.os.Build
 import android.util.Log
-import android.util.Rational
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -16,8 +14,11 @@ import androidx.annotation.RequiresApi
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import androidx.media3.ui.PlayerView
 import com.huddlecommunity.better_native_video_player.handlers.VideoPlayerEventHandler
 import com.huddlecommunity.better_native_video_player.handlers.VideoPlayerMethodHandler
@@ -78,10 +79,11 @@ class VideoPlayerView(
     private var originalSystemUiVisibility: Int = 0
     private var originalOrientation: Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
 
-    // PiP settings
-    private var allowsPictureInPicture: Boolean = true
-    private var canStartPictureInPictureAutomatically: Boolean = false
+    // Store native controls setting
     private var showNativeControlsOriginal: Boolean = true
+
+    // HDR setting
+    private var enableHDR: Boolean = false
 
 
     init {
@@ -94,11 +96,16 @@ class VideoPlayerView(
         isFullScreen = args?.get("isFullScreen") as? Boolean ?: false
         Log.d(TAG, "Initial fullscreen state: $isFullScreen")
 
-        // Extract PiP settings from args
-        allowsPictureInPicture = args?.get("allowsPictureInPicture") as? Boolean ?: true
-        canStartPictureInPictureAutomatically = args?.get("canStartPictureInPictureAutomatically") as? Boolean ?: false
+        // Extract native controls setting from args
         showNativeControlsOriginal = args?.get("showNativeControls") as? Boolean ?: true
-        Log.d(TAG, "PiP settings - allows: $allowsPictureInPicture, autoStart: $canStartPictureInPictureAutomatically, showControls: $showNativeControlsOriginal")
+
+        // Extract HDR setting from args
+        enableHDR = args?.get("enableHDR") as? Boolean ?: false
+        Log.d(TAG, "HDR setting: $enableHDR")
+
+        // Extract looping setting from args
+        val enableLooping = args?.get("enableLooping") as? Boolean ?: false
+        Log.d(TAG, "Looping setting: $enableLooping")
         
         // Extract and store media info from args (if provided during initialization)
         // This ensures we have the correct media info even for shared players
@@ -122,13 +129,26 @@ class VideoPlayerView(
         } else {
             Log.d(TAG, "No controller ID provided, creating new player")
             isSharedPlayer = false
-            ExoPlayer.Builder(context).build()
+            ExoPlayer.Builder(context)
+                .setTrackSelector(DefaultTrackSelector(context))
+                .setAudioAttributes(AudioAttributes.DEFAULT, false)
+                .build()
         }
 
+        // Set repeat mode for looping
+        player.repeatMode = if (enableLooping) {
+            Player.REPEAT_MODE_ONE
+        } else {
+            Player.REPEAT_MODE_OFF
+        }
+        Log.d(TAG, "Repeat mode set to: ${if (enableLooping) "REPEAT_MODE_ONE (looping enabled)" else "REPEAT_MODE_OFF (looping disabled)"}")
+
         // Create PlayerView and attach player
+        val showNativeControls = args?.get("showNativeControls") as? Boolean ?: true
         playerView = PlayerView(context).apply {
             this.player = this@VideoPlayerView.player
-            useController = args?.get("showNativeControls") as? Boolean ?: true
+            setKeepContentOnPlayerReset(true)
+            useController = showNativeControls
             controllerShowTimeoutMs = 5000
             controllerHideOnTouch = true
 
@@ -137,13 +157,31 @@ class VideoPlayerView(
             setShowPreviousButton(false)
             // Note: There's no direct method to hide settings button, but we can hide it via layout
 
-            // Configure PiP from args
-            val allowsPiP = args?.get("allowsPictureInPicture") as? Boolean ?: true
-            if (allowsPiP && context is Activity) {
-                Log.d(TAG, "PiP enabled for this player")
+            // Configure HDR rendering
+            if (!enableHDR) {
+                Log.d(TAG, "🎨 HDR disabled for PlayerView - ExoPlayer will tone-map to SDR")
+                // ExoPlayer handles tone-mapping automatically, but we can hint at the surface level
+                // Note: More explicit control would require custom RenderersFactory
+            } else {
+                Log.d(TAG, "🎨 HDR enabled for PlayerView")
             }
 
             Log.d(TAG, "PlayerView configured")
+        }
+
+        // For shared players that already existed, ensure surface is properly connected
+        // This is crucial when returning to a video after calling releaseResources()
+        if (isSharedPlayer) {
+            Log.d(TAG, "Ensuring surface connection for existing shared player")
+            playerView.post {
+                // Force reconnection by detaching and reattaching the player
+                val currentPlayer = playerView.player
+                if (currentPlayer != null) {
+                    playerView.player = null
+                    playerView.player = currentPlayer
+                    Log.d(TAG, "Surface reconnected for shared player on init")
+                }
+            }
         }
 
         // Create container view that holds the player view
@@ -157,6 +195,18 @@ class VideoPlayerView(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT
             ))
+        }
+
+        // For shared players, also reconnect when this view is attached to a window.
+        // Surface may not be ready in init; attaching ensures we rebind once the view is in the hierarchy.
+        if (isSharedPlayer) {
+            containerView.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                override fun onViewAttachedToWindow(v: View) {
+                    containerView.removeOnAttachStateChangeListener(this)
+                    reconnectSurface()
+                }
+                override fun onViewDetachedFromWindow(v: View) {}
+            })
         }
 
         // Set up fullscreen button listener after PlayerView is configured
@@ -205,7 +255,9 @@ class VideoPlayerView(
             player = player,
             eventHandler = eventHandler,
             notificationHandler = notificationHandler,
-            updateMediaInfo = { mediaInfo -> currentMediaInfo = mediaInfo }
+            updateMediaInfo = { mediaInfo -> currentMediaInfo = mediaInfo },
+            controllerId = controllerId,
+            enableHDR = enableHDR
         )
 
         // Set fullscreen callback for method handler
@@ -213,49 +265,68 @@ class VideoPlayerView(
             handleFullscreenToggleNative(enterFullscreen)
         }
 
-        // Set PiP callbacks for method handler
-        methodHandler.onEnterPictureInPictureRequest = {
-            enterPictureInPictureInternal()
-        }
-        methodHandler.onExitPictureInPictureRequest = {
-            exitPictureInPictureInternal()
-        }
+        // PiP is now handled by the floating package on the Dart side
+        // Callbacks removed as they're no longer needed
 
         // Setup observer with notification handler and media info getter
         observer = VideoPlayerObserver(
             player = player,
             eventHandler = eventHandler,
             notificationHandler = notificationHandler,
-            getMediaInfo = { currentMediaInfo }
+            getMediaInfo = { currentMediaInfo },
+            controllerId = controllerId,
+            viewId = viewId
         )
         player.addListener(observer)
+
+        // Register this view with SharedPlayerManager if using a shared player
+        // This allows other views to notify us when they're disposed
+        if (controllerId != null) {
+            SharedPlayerManager.registerView(controllerId, viewId) {
+                reconnectSurface()
+                // Emit current state after reconnecting to ensure UI stays in sync
+                emitCurrentState()
+            }
+        }
 
         // Setup event channel
         val eventChannelName = "native_video_player_$viewId"
         eventChannel = EventChannel(binaryMessenger, eventChannelName)
         eventChannel.setStreamHandler(eventHandler)
 
-        // For shared players, set up callback to send the current playback state
-        // when the event listener is attached (in onListen)
-        // This ensures the new view knows if the video is playing or paused
-        if (controllerId != null) {
-            eventHandler.setInitialStateCallback {
-                Log.d(TAG, "Sending initial state for shared player - isPlaying: ${player.isPlaying}, playbackState: ${player.playbackState}, duration: ${player.duration}")
-                
-                // Send loaded event first if the player has content loaded
-                // Check duration >= 0 because C.TIME_UNSET is a large negative value
-                if (player.playbackState != ExoPlayer.STATE_IDLE && player.duration >= 0) {
-                    eventHandler.sendEvent("loaded", mapOf(
-                        "duration" to player.duration.toInt()
-                    ))
-                }
-                
-                // Then send the current playback state
-                if (player.isPlaying) {
-                    eventHandler.sendEvent("play")
-                } else if (player.playbackState != ExoPlayer.STATE_IDLE) {
-                    eventHandler.sendEvent("pause")
-                }
+        // Set up callback to send the current playback state when the event listener is attached
+        // This ensures the Flutter side knows the initial state (idle, playing, paused, etc.)
+        // This applies to both new and shared players
+        eventHandler.setInitialStateCallback {
+            Log.d(TAG, "Sending initial state - isPlaying: ${player.isPlaying}, playbackState: ${player.playbackState}, duration: ${player.duration}")
+
+            // For shared players or players with media already loaded, send loaded event first
+            if (player.playbackState != ExoPlayer.STATE_IDLE && player.duration >= 0) {
+                Log.d(TAG, "Sending loaded event with duration: ${player.duration}")
+                eventHandler.sendEvent("loaded", mapOf(
+                    "duration" to player.duration.toInt()
+                ), synchronous = true)
+            }
+
+            // Send buffering event if currently buffering
+            if (player.playbackState == Player.STATE_BUFFERING) {
+                Log.d(TAG, "Sending buffering event")
+                eventHandler.sendEvent("buffering", synchronous = true)
+            }
+            // Then send the current playback state, but only if not buffering
+            // During initial buffering, isPlaying might be true (playWhenReady=true)
+            // but the video hasn't actually started playing yet
+            else if (player.isPlaying) {
+                Log.d(TAG, "Sending play event")
+                eventHandler.sendEvent("play", synchronous = true)
+            } else if (player.playbackState != Player.STATE_IDLE) {
+                Log.d(TAG, "Sending pause event")
+                eventHandler.sendEvent("pause", synchronous = true)
+            } else {
+                // Player is in IDLE state - send idle event to ensure UI shows correct state
+                // Use synchronous=true to ensure this is the first event received
+                Log.d(TAG, "Player is in IDLE state, sending idle event (synchronous)")
+                eventHandler.sendEvent("idle", synchronous = true)
             }
         }
 
@@ -279,6 +350,11 @@ class VideoPlayerView(
             "setShowNativeControls" -> {
                 val show = call.argument<Boolean>("show") ?: true
                 playerView.useController = show
+                result.success(null)
+            }
+            "ensureSurfaceConnected" -> {
+                // Called when reconnecting after all platform views were disposed (list→detail→back).
+                reconnectSurface()
                 result.success(null)
             }
             else -> {
@@ -489,6 +565,18 @@ class VideoPlayerView(
             ))
         }
 
+        // Force the PlayerView to reattach its surface to the player
+        // This is necessary because moving the view between parents can disconnect the surface
+        playerView.post {
+            // Temporarily detach and reattach the player to ensure surface is connected
+            val currentPlayer = playerView.player
+            if (currentPlayer != null) {
+                playerView.player = null
+                playerView.player = currentPlayer
+                Log.d(TAG, "Reattached player to surface after exiting fullscreen")
+            }
+        }
+
         // Restore system UI on the activity window
         activity.window?.let { activityWindow ->
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -556,170 +644,65 @@ class VideoPlayerView(
         }
     }
 
+    // PiP is now handled by the floating package on the Dart side
+    // All PiP-related methods have been removed
+
     /**
-     * Enter Picture-in-Picture mode
+     * Emits all current player states to ensure UI is in sync
+     * This is useful after events like exiting PiP where the UI needs to refresh
      */
+    private fun emitCurrentState() {
+        Log.d(TAG, "Emitting current state after PiP exit")
+
+        // Emit current time and duration
+        val currentPosition = player.currentPosition
+        val duration = player.duration
+
+        if (duration > 0) {
+            // Get buffered position
+            val bufferedPosition = player.bufferedPosition
+
+            eventHandler.sendEvent("timeUpdate", mapOf(
+                "position" to currentPosition.toInt(),
+                "duration" to duration.toInt(),
+                "bufferedPosition" to bufferedPosition.toInt(),
+                "isBuffering" to (player.playbackState == ExoPlayer.STATE_BUFFERING)
+            ))
+            Log.d(TAG, "Emitted timeUpdate with duration: ${duration}ms")
+        }
+
+        // Emit current playback state
+        if (player.isPlaying) {
+            Log.d(TAG, "Emitting play state")
+            eventHandler.sendEvent("play")
+        } else if (player.playbackState != ExoPlayer.STATE_IDLE) {
+            Log.d(TAG, "Emitting pause state")
+            eventHandler.sendEvent("pause")
+        }
+    }
+
     /**
-     * Enters Picture-in-Picture mode (internal method called by methodHandler)
-     * Returns true if PiP was entered successfully, false otherwise
+     * Reconnects the player's surface to the PlayerView
+     * This is called when another platform view using the same shared player is disposed
      */
-    private fun enterPictureInPictureInternal(): Boolean {
-        Log.d(TAG, "Attempting to enter PiP mode")
+    private fun reconnectSurface() {
+        if (isDisposed) {
+            Log.d(TAG, "Ignoring surface reconnect - view is disposed")
+            return
+        }
 
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            // Try to get activity from plugin first
-            val pluginActivity = NativeVideoPlayerPlugin.getActivity()
-            val activity = pluginActivity ?: getActivity(context)
-
-            if (activity != null) {
-                Log.d(TAG, "Activity found for PiP: ${activity.javaClass.simpleName}")
-
-                val aspectRatio = player.videoSize.let { size ->
-                    if (size.width > 0 && size.height > 0) {
-                        Log.d(TAG, "Using video aspect ratio: ${size.width}x${size.height}")
-                        android.util.Rational(size.width, size.height)
-                    } else {
-                        Log.d(TAG, "Using default aspect ratio 16:9")
-                        android.util.Rational(16, 9)
-                    }
-                }
-
-                val params = android.app.PictureInPictureParams.Builder()
-                    .setAspectRatio(aspectRatio)
-                    .build()
-
-                // Hide ExoPlayer controls BEFORE entering PiP mode - only system PiP controls will show
-                // Setting useController to false removes the controller UI completely
-                Log.d(TAG, "Current useController: ${playerView.useController}")
-                playerView.useController = false
-                playerView.controllerAutoShow = false
-                playerView.hideController()
-                Log.d(TAG, "ExoPlayer controls hidden (useController: ${playerView.useController})")
-
-                val entered = activity.enterPictureInPictureMode(params)
-                Log.d(TAG, "PiP mode entered: $entered")
-
-                if (entered) {
-                    eventHandler.sendEvent("pipStart", mapOf("isPictureInPicture" to true))
-                    return true
-                } else {
-                    // Restore controls if PiP failed
-                    playerView.useController = showNativeControlsOriginal
-                    Log.e(TAG, "Failed to enter PiP mode")
-                    return false
-                }
+        Log.d(TAG, "Reconnecting surface for view $viewId (notified by another view disposal)")
+        playerView.post {
+            // Temporarily detach and reattach the player to ensure surface is connected
+            val currentPlayer = playerView.player
+            if (currentPlayer != null) {
+                playerView.player = null
+                playerView.player = currentPlayer
+                Log.d(TAG, "Surface reconnected successfully for view $viewId")
             } else {
-                Log.e(TAG, "No activity found for PiP")
-                return false
-            }
-        } else {
-            Log.e(TAG, "PiP not supported on Android version: ${android.os.Build.VERSION.SDK_INT}")
-            return false
-        }
-    }
-
-    /**
-     * Exits Picture-in-Picture mode (internal method called by methodHandler)
-     * Returns true if PiP was exited successfully, false otherwise
-     */
-    @RequiresApi(Build.VERSION_CODES.O)
-    private fun exitPictureInPictureInternal(): Boolean {
-        Log.d(TAG, "Attempting to exit PiP mode")
-
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
-            val pluginActivity = NativeVideoPlayerPlugin.getActivity()
-            val activity = pluginActivity ?: getActivity(context)
-
-            if (activity != null && activity.isInPictureInPictureMode) {
-                Log.d(TAG, "Activity is in PiP mode, exiting...")
-                // Restore controls when exiting PiP
-                playerView.useController = showNativeControlsOriginal
-                playerView.showController()
-                
-                // Exit PiP by going back to normal mode (no direct API for this)
-                // The system will call onPictureInPictureModeChanged which we handle in the observer
-                eventHandler.sendEvent("pipStop", mapOf("isPictureInPicture" to false))
-                return true
-            } else {
-                Log.d(TAG, "Activity not in PiP mode")
-                return false
-            }
-        } else {
-            Log.e(TAG, "PiP not supported on Android version: ${android.os.Build.VERSION.SDK_INT}")
-            return false
-        }
-    }
-
-    /**
-     * Automatically enters PiP when user leaves the app (if enabled)
-     * This is called from the activity's onUserLeaveHint
-     */
-    fun tryAutoPictureInPicture(): Boolean {
-        if (!canStartPictureInPictureAutomatically || !allowsPictureInPicture) {
-            Log.d(TAG, "Auto PiP not enabled - auto: $canStartPictureInPictureAutomatically, allows: $allowsPictureInPicture")
-            return false
-        }
-
-        // Only auto-enter PiP if video is playing
-        if (!player.isPlaying) {
-            Log.d(TAG, "Auto PiP skipped - video not playing")
-            return false
-        }
-
-        Log.d(TAG, "Attempting auto PiP entry")
-
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            val pluginActivity = NativeVideoPlayerPlugin.getActivity()
-            val activity = pluginActivity ?: getActivity(context)
-
-            if (activity != null) {
-                val aspectRatio = player.videoSize.let { size ->
-                    if (size.width > 0 && size.height > 0) {
-                        android.util.Rational(size.width, size.height)
-                    } else {
-                        android.util.Rational(16, 9)
-                    }
-                }
-
-                val params = android.app.PictureInPictureParams.Builder()
-                    .setAspectRatio(aspectRatio)
-                    .build()
-
-                // Hide ExoPlayer controls BEFORE entering PiP mode
-                playerView.useController = false
-                playerView.controllerAutoShow = false
-                playerView.hideController()
-                Log.d(TAG, "ExoPlayer controls hidden before entering auto PiP mode")
-
-                val entered = activity.enterPictureInPictureMode(params)
-                Log.d(TAG, "Auto PiP entered: $entered")
-
-                if (entered) {
-                    eventHandler.sendEvent("pipStart", mapOf("isPictureInPicture" to true, "auto" to true))
-                } else {
-                    // Restore controls if PiP failed
-                    playerView.useController = showNativeControlsOriginal
-                }
-
-                return entered
+                Log.w(TAG, "Cannot reconnect surface - player is null")
             }
         }
-
-        return false
-    }
-
-    /**
-     * Restores ExoPlayer controls when exiting PiP mode
-     * This should be called when onPictureInPictureModeChanged detects exit from PiP
-     */
-    fun onExitPictureInPicture() {
-        Log.d(TAG, "Exiting PiP mode - restoring controls")
-        playerView.useController = showNativeControlsOriginal
-        playerView.controllerAutoShow = true
-        if (showNativeControlsOriginal) {
-            playerView.showController()
-        }
-        Log.d(TAG, "ExoPlayer controls restored to: $showNativeControlsOriginal")
     }
 
     override fun dispose() {
@@ -743,22 +726,49 @@ class VideoPlayerView(
         // Remove fullscreen button listener to prevent clicks during disposal
         playerView.setFullscreenButtonClickListener(null)
 
+        Log.d(TAG, "dispose() - controllerId: $controllerId")
+
+        // Check if we're in PiP — the view may be disposed during the PiP
+        // resize but the player should keep playing.
+        val isInPip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            (context as? Activity)?.isInPictureInPictureMode ?: false
+        } else false
+
         // Remove listeners and stop periodic updates
         player.removeListener(observer)
         observer.release()
+        if (!isInPip) {
+            methodHandler.cleanup()
+        }
 
         // Clean up channels
+        // First call onCancel to properly clean up the event sink
+        // This prevents MissingPluginException when Flutter tries to cancel the subscription
+        try {
+            eventHandler.onCancel(null)
+        } catch (e: Exception) {
+            Log.w(TAG, "Error calling onCancel on event handler: ${e.message}")
+        }
+        // Then set the stream handler to null
         eventChannel.setStreamHandler(null)
 
-        // Note: player and notification handler are NOT released here if they're shared
-        // The shared player and notification handler will be kept alive for reuse
+        // Clear media info
+        currentMediaInfo = null
+
         if (controllerId != null) {
-            Log.d(TAG, "Platform view disposed but player and notification handler kept alive for controller ID: $controllerId")
+            if (!isInPip) {
+                player.pause()
+            }
+            playerView.player = null
+            SharedPlayerManager.unregisterView(controllerId, viewId)
+            Log.d(TAG, "Disposed shared player view for controller ID: $controllerId (pip=$isInPip)")
         } else {
-            // Only release if not shared
+            // Only release if not shared (for non-shared players, fully clean up media session)
             notificationHandler.release()
             player.release()
         }
+
+        NativeVideoPlayerPlugin.unregisterView(viewId.toLong())
     }
 }
 

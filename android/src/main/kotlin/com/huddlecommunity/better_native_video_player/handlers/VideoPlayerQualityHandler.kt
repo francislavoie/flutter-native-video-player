@@ -34,6 +34,7 @@ object VideoPlayerQualityHandler {
             val lines = playlist.lines()
             var lastBitrate: Int? = null
             var lastResolution: Pair<Int, Int>? = null
+            var lastFrameRate: Double? = null
 
             for (line in lines) {
                 when {
@@ -49,6 +50,10 @@ object VideoPlayerQualityHandler {
                         // Extract bitrate
                         val bitrateMatch = Regex("BANDWIDTH=(\\d+)").find(line)
                         lastBitrate = bitrateMatch?.groupValues?.get(1)?.toInt()
+
+                        // Extract frame rate
+                        val frameRateMatch = Regex("FRAME-RATE=(\\d+\\.?\\d*)").find(line)
+                        lastFrameRate = frameRateMatch?.groupValues?.get(1)?.toDouble()
                     }
                     line.endsWith(".m3u8") && lastResolution != null -> {
                         // Resolve relative URLs against the base URL
@@ -67,18 +72,26 @@ object VideoPlayerQualityHandler {
                             }
                         }
 
+                        val height = lastResolution!!.second
+                        val label = if (lastFrameRate != null) {
+                            "${height}p${lastFrameRate!!.roundToInt()}"
+                        } else {
+                            "${height}p"
+                        }
+
                         qualities.add(
                             QualityLevel(
                                 url = qualityUrl,
-                                label = "${lastResolution.first}x${lastResolution.second}",
+                                label = label,
                                 bitrate = lastBitrate ?: 0,
-                                width = lastResolution.first,
-                                height = lastResolution.second
+                                width = lastResolution!!.first,
+                                height = lastResolution!!.second
                             )
                         )
 
                         lastResolution = null
                         lastBitrate = null
+                        lastFrameRate = null
                     }
                 }
             }
