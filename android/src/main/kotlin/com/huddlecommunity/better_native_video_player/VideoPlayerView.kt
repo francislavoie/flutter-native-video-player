@@ -278,7 +278,7 @@ class VideoPlayerView(
             viewId = viewId,
             isInPipMode = {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                    (context as? Activity)?.isInPictureInPictureMode ?: false
+                    NativeVideoPlayerPlugin.getActivity()?.isInPictureInPictureMode ?: false
                 } else false
             }
         )
@@ -736,7 +736,7 @@ class VideoPlayerView(
         // Check if we're in PiP — the view may be disposed during the PiP
         // resize but the player should keep playing.
         val isInPip = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            (context as? Activity)?.isInPictureInPictureMode ?: false
+            NativeVideoPlayerPlugin.getActivity()?.isInPictureInPictureMode ?: false
         } else false
 
         // Remove listeners and stop periodic updates

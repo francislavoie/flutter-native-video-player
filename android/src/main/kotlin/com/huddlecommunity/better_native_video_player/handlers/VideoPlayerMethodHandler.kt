@@ -54,7 +54,7 @@ class VideoPlayerMethodHandler(
 
     private fun isInPipMode(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            (context as? Activity)?.isInPictureInPictureMode ?: false
+            NativeVideoPlayerPlugin.getActivity()?.isInPictureInPictureMode ?: false
         } else false
     }
 
