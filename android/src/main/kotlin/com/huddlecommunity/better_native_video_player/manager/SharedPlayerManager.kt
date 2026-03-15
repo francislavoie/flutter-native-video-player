@@ -9,6 +9,7 @@ import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import com.huddlecommunity.better_native_video_player.VideoPlayerMediaSessionService
 import com.huddlecommunity.better_native_video_player.handlers.VideoPlayerNotificationHandler
 import com.huddlecommunity.better_native_video_player.handlers.VideoPlayerEventHandler
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Manages shared ExoPlayer instances and NotificationHandlers across multiple platform views
@@ -18,16 +19,16 @@ import com.huddlecommunity.better_native_video_player.handlers.VideoPlayerEventH
 object SharedPlayerManager {
     private const val TAG = "SharedPlayerManager"
 
-    private val players = mutableMapOf<Int, ExoPlayer>()
-    private val notificationHandlers = mutableMapOf<Int, VideoPlayerNotificationHandler>()
+    private val players = ConcurrentHashMap<Int, ExoPlayer>()
+    private val notificationHandlers = ConcurrentHashMap<Int, VideoPlayerNotificationHandler>()
 
     // Track active platform views for each controller
     // Map<ControllerId, Map<ViewId, SurfaceReconnectCallback>>
-    private val activeViews = mutableMapOf<Int, MutableMap<Long, () -> Unit>>()
+    private val activeViews = ConcurrentHashMap<Int, ConcurrentHashMap<Long, () -> Unit>>()
 
     // Store available qualities for each controller
     // This ensures qualities persist across view recreations
-    private val qualitiesCache = mutableMapOf<Int, List<Map<String, Any>>>()
+    private val qualitiesCache = ConcurrentHashMap<Int, List<Map<String, Any>>>()
 
     /**
      * Gets or creates a player for the given controller ID
@@ -63,7 +64,7 @@ object SharedPlayerManager {
      * The callback will be called when another view using the same controller is disposed
      */
     fun registerView(controllerId: Int, viewId: Long, reconnectCallback: () -> Unit) {
-        val views = activeViews.getOrPut(controllerId) { mutableMapOf() }
+        val views = activeViews.getOrPut(controllerId) { ConcurrentHashMap() }
         views[viewId] = reconnectCallback
         Log.d(TAG, "Registered view $viewId for controller $controllerId (total views: ${views.size})")
     }
@@ -71,14 +72,16 @@ object SharedPlayerManager {
     /**
      * Unregisters a platform view and notifies other views to reconnect
      */
+    @Synchronized
     fun unregisterView(controllerId: Int, viewId: Long) {
         val views = activeViews[controllerId]
         if (views != null) {
             views.remove(viewId)
             Log.d(TAG, "Unregistered view $viewId for controller $controllerId (remaining views: ${views.size})")
 
-            // Notify all remaining views to reconnect their surfaces
-            views.values.forEach { callback ->
+            // Snapshot remaining callbacks to avoid concurrent modification
+            val callbacks = views.values.toList()
+            for (callback in callbacks) {
                 try {
                     callback()
                 } catch (e: Exception) {

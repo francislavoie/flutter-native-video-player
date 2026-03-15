@@ -25,6 +25,7 @@ class VideoPlayerObserver(
         private const val TAG = "VideoPlayerObserver"
         private const val UPDATE_INTERVAL_MS = 1000L
         private const val STALL_WATCHDOG_MS = 12_000L
+        private const val MAX_RECOVERY_ATTEMPTS = 3
     }
 
     // Track if we've already sent a buffering event to avoid duplicates
@@ -100,6 +101,13 @@ class VideoPlayerObserver(
         val runnable = Runnable {
             if (player.playbackState == Player.STATE_BUFFERING) {
                 stallRecoveryAttempt++
+
+                if (stallRecoveryAttempt > MAX_RECOVERY_ATTEMPTS) {
+                    Log.e(TAG, "Stall watchdog exceeded $MAX_RECOVERY_ATTEMPTS attempts — giving up")
+                    eventHandler.sendEvent("error", mapOf("message" to "Playback stalled after $MAX_RECOVERY_ATTEMPTS recovery attempts"))
+                    return@Runnable
+                }
+
                 hasReportedBuffering = false
                 eventHandler.sendEvent("buffering")
                 hasReportedBuffering = true
