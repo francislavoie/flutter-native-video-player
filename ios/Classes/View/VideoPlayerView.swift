@@ -848,9 +848,10 @@ import QuartzCore
                         self.setupNowPlayingInfo(mediaInfo: mediaInfo)
                         self.updateNowPlayingPlaybackTime()
 
-                        // Resume if the system recommends it, or if we were
-                        // playing when the interruption started.
-                        if shouldResume || self.wasPlayingBeforeInterruption {
+                        // Resume if the system recommends it, if we were
+                        // playing when the interruption started, or if PiP
+                        // is active (user intends continuous playback).
+                        if shouldResume || self.wasPlayingBeforeInterruption || self.isPipCurrentlyActive {
                             if self.isPipCurrentlyActive {
                                 // During PiP, just resume — brief interruptions
                                 // (notification sounds) don't need a seek.

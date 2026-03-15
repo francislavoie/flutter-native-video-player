@@ -275,7 +275,12 @@ class VideoPlayerView(
             notificationHandler = notificationHandler,
             getMediaInfo = { currentMediaInfo },
             controllerId = controllerId,
-            viewId = viewId
+            viewId = viewId,
+            isInPipMode = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    (context as? Activity)?.isInPictureInPictureMode ?: false
+                } else false
+            }
         )
         player.addListener(observer)
 
@@ -758,8 +763,8 @@ class VideoPlayerView(
         if (controllerId != null) {
             if (!isInPip) {
                 player.pause()
+                playerView.player = null
             }
-            playerView.player = null
             SharedPlayerManager.unregisterView(controllerId, viewId)
             Log.d(TAG, "Disposed shared player view for controller ID: $controllerId (pip=$isInPip)")
         } else {

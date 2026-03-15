@@ -18,7 +18,8 @@ class VideoPlayerObserver(
     private val notificationHandler: com.huddlecommunity.better_native_video_player.handlers.VideoPlayerNotificationHandler? = null,
     private val getMediaInfo: (() -> Map<String, Any>?)? = null,
     private val controllerId: Int? = null,
-    private val viewId: Long? = null
+    private val viewId: Long? = null,
+    private val isInPipMode: () -> Boolean = { false }
 ) : Player.Listener {
 
     companion object {
@@ -112,9 +113,10 @@ class VideoPlayerObserver(
                 eventHandler.sendEvent("buffering")
                 hasReportedBuffering = true
 
-                if (stallRecoveryAttempt <= 1) {
+                if (stallRecoveryAttempt <= 1 || isInPipMode()) {
                     // Light recovery: seek to live edge, preserving the media source.
-                    Log.w(TAG, "Stall watchdog fired (attempt $stallRecoveryAttempt) — seeking to default position")
+                    // Always use light recovery during PiP — stop() is destructive and kills PiP.
+                    Log.w(TAG, "Stall watchdog fired (attempt $stallRecoveryAttempt, pip=${isInPipMode()}) — seeking to default position")
                     player.seekToDefaultPosition()
                     player.prepare()
                     player.play()

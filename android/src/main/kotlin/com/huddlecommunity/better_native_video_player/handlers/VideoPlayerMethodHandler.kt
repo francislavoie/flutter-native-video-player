@@ -1,5 +1,6 @@
 package com.huddlecommunity.better_native_video_player.handlers
 
+import android.app.Activity
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
@@ -51,20 +52,27 @@ class VideoPlayerMethodHandler(
     // resume correctly when focus is regained (e.g., after a phone call).
     private var wasPlayingBeforeFocusLoss = false
 
+    private fun isInPipMode(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            (context as? Activity)?.isInPictureInPictureMode ?: false
+        } else false
+    }
+
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
             AudioManager.AUDIOFOCUS_LOSS,
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 wasPlayingBeforeFocusLoss = player.isPlaying
-                if (player.isPlaying) {
+                if (player.isPlaying && !isInPipMode()) {
                     player.pause()
                     Log.d(TAG, "Audio focus lost (transient/permanent) — paused")
                 }
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
-                // Lower volume instead of pausing
-                player.volume = 0.3f
-                Log.d(TAG, "Audio focus ducking — lowered volume")
+                if (!isInPipMode()) {
+                    player.volume = 0.3f
+                    Log.d(TAG, "Audio focus ducking — lowered volume")
+                }
             }
             AudioManager.AUDIOFOCUS_GAIN -> {
                 player.volume = 1.0f

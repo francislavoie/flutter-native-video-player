@@ -107,7 +107,9 @@ extension VideoPlayerView {
                         } else if player.rate > 0 && player.timeControlStatus == .playing {
                             sendEvent("play")
                         } else if player.timeControlStatus == .paused && player.reasonForWaitingToPlay == nil {
-                            sendEvent("pause")
+                            if !isPipCurrentlyActive {
+                                sendEvent("pause")
+                            }
                         }
                     }
                 }
@@ -184,8 +186,9 @@ extension VideoPlayerView {
                     sendEvent("play")
                 case .paused:
                     // Only send pause if not waiting to play (buffering)
-                    // This prevents sending pause when seeking to unbuffered position
-                    if player.reasonForWaitingToPlay == nil {
+                    // and not in PiP (transient pauses from stall recovery
+                    // would block Dart-side recovery mechanisms).
+                    if player.reasonForWaitingToPlay == nil && !isPipCurrentlyActive {
                         sendEvent("pause")
                     }
                 case .waitingToPlayAtSpecifiedRate:

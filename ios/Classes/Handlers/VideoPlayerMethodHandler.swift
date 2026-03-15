@@ -130,10 +130,6 @@ extension VideoPlayerView {
 
         playerItem = AVPlayerItem(asset: asset)
 
-        if #available(iOS 15.0, *) {
-            playerItem.startsOnFirstEligibleVariant = true
-        }
-
         // Replace current item immediately - don't wait for HDR configuration
         // This allows the video to start loading right away
         player?.replaceCurrentItem(with: playerItem)
@@ -408,7 +404,10 @@ extension VideoPlayerView {
         let bufferDuration = args?["bufferDuration"] as? Double ?? 4.0
 
         player?.automaticallyWaitsToMinimizeStalling = false
-        player?.currentItem?.preferredForwardBufferDuration = bufferDuration
+        // Let AVPlayer manage its own forward buffer size (default = 0 = unlimited).
+        // A fixed small buffer (2-4s) starves the ABR algorithm of confidence,
+        // causing it to always pick low quality even on fast connections.
+        player?.currentItem?.preferredForwardBufferDuration = 0
         player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = true
 
         if #available(iOS 13.0, *) {
