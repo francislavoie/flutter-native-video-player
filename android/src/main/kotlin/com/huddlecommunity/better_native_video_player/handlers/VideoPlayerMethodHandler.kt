@@ -520,6 +520,7 @@ class VideoPlayerMethodHandler(
                 trackSelector.buildUponParameters()
                     .clearVideoSizeConstraints()
                     .setMaxVideoBitrate(Int.MAX_VALUE)
+                    .setMinVideoBitrate(0)
             )
 
             eventHandler.sendEvent("qualityChange", mapOf(
