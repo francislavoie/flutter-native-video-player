@@ -561,23 +561,6 @@ class SharedPlayerManager: NSObject {
             }
         }
     }
-
-    /// Returns the primary view for background PiP, or nil if none is eligible.
-    func primaryViewForBackgroundPip() -> VideoPlayerView? {
-        guard let controllerId = controllerWithAutomaticPiP else { return nil }
-        if let primaryViewId = primaryViewIdForController[controllerId],
-           let wrapper = videoPlayerViews["\(primaryViewId)"],
-           let view = wrapper.view {
-            return view
-        }
-        // Fallback: any view for the controller
-        for (_, wrapper) in videoPlayerViews {
-            if let view = wrapper.view, view.controllerId == controllerId {
-                return view
-            }
-        }
-        return nil
-    }
 }
 
 // MARK: - Weak Wrapper

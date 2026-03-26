@@ -70,24 +70,25 @@ class VideoPlayerQualityHandler {
                                 resolution: CGSize(width: width, height: height)
                             ))
                         }
+                    } else {
+                        // Audio-only variant (no RESOLUTION tag). Loaded via direct
+                        // URL instead of ABR hints since preferredMaximumResolution
+                        // cannot force audio-only selection.
+                        qualities.append(VideoPlayer.QualityLevel(
+                            url: qualityUrl,
+                            label: "Audio Only",
+                            bitrate: lastBitrate ?? 0,
+                            resolution: .zero
+                        ))
                     }
-                    // Audio-only variants (no RESOLUTION tag) are intentionally
-                    // skipped — AVPlayer's ABR hints (preferredMaximumResolution /
-                    // preferredPeakBitRate) cannot force selection of an audio-only
-                    // variant, so exposing it as a quality option causes unreliable
-                    // playback behavior.
                     lastResolution = nil
                     lastBitrate = nil
                     lastFrameRate = nil
                 }
             }
             
-            // Filter out 160p and below — AVPlayer's VideoToolbox decoder
-            // freezes video (audio continues) at very low resolutions.
-            let viable = qualities.filter { $0.resolution.height > 160 }
-
             // Sort qualities by resolution height (ascending)
-            let sortedQualities = viable.sorted { $0.resolution.height < $1.resolution.height }
+            let sortedQualities = qualities.sorted { $0.resolution.height < $1.resolution.height }
 
             // Deduplicate labels, keeping the highest-bitrate variant.
             // When Twitch returns multiple codecs (H.264, HEVC, AV1) at the

@@ -33,6 +33,9 @@ extension VideoPlayerView {
             }
         }
 
+        // Store master playlist URL for reloading after audio-only playback
+        masterPlaylistUrl = url
+
         // Reset stall recovery guard — a new load invalidates any in-flight seek.
         isRecoveringFromStall = false
 
@@ -370,33 +373,89 @@ extension VideoPlayerView {
         } else {
             let width = qualityInfo["width"] as? Int ?? 0
             let height = qualityInfo["height"] as? Int ?? 0
+            let urlString = qualityInfo["url"] as? String ?? ""
 
-            // Only constrain resolution — let AVPlayer pick the highest bitrate
-            // variant at this resolution (which may be HEVC over H.264).
-            // Setting preferredPeakBitRate simultaneously over-constrains the ABR
-            // and can exclude higher-bitrate codec variants at the same resolution.
-            player?.currentItem?.preferredPeakBitRate = 0
-            player?.currentItem?.preferredMaximumResolution = CGSize(width: width, height: height)
+            if width == 0 && height == 0, let variantUrl = URL(string: urlString) {
+                // Audio-only: load the variant URL directly since ABR hints
+                // (preferredMaximumResolution) cannot force audio-only selection.
+                // playWhenReady handles play after the item reaches readyToPlay.
+                let item = AVPlayerItem(url: variantUrl)
+                player?.replaceCurrentItem(with: item)
+                configureLiveItem()
+                playWhenReady()
+            } else {
+                // Video quality: if currently on audio-only (different item),
+                // reload the master playlist first so ABR hints work.
+                var replacedItem = false
+                if let masterUrl = masterPlaylistUrl,
+                   let currentUrl = (player?.currentItem?.asset as? AVURLAsset)?.url,
+                   currentUrl != masterUrl {
+                    let item = AVPlayerItem(url: masterUrl)
+                    player?.replaceCurrentItem(with: item)
+                    configureLiveItem()
+                    replacedItem = true
+                }
+
+                // Constrain resolution, let AVPlayer pick the best bitrate variant
+                player?.currentItem?.preferredPeakBitRate = 0
+                player?.currentItem?.preferredMaximumResolution = CGSize(width: width, height: height)
+
+                if replacedItem {
+                    // New item — wait for readyToPlay before playing
+                    playWhenReady()
+                } else {
+                    // Same item, just changed ABR hint — seek to live edge
+                    // to force keyframe re-sync
+                    if let item = player?.currentItem, item.duration == .indefinite,
+                       let lastRange = item.seekableTimeRanges.last?.timeRangeValue {
+                        let liveEdge = CMTimeRangeGetEnd(lastRange)
+                        player?.seek(to: liveEdge, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                            self?.player?.play()
+                        }
+                    }
+                }
+            }
 
             sendEvent("qualityChange", data: [
-                "url": qualityInfo["url"] as? String ?? "",
+                "url": urlString,
                 "label": qualityInfo["label"] as? String ?? "",
                 "isAuto": false
             ])
         }
 
-        // For live streams, seek to live edge after quality switch to force
-        // keyframe re-sync. Without this, the decoder can stall on segments
-        // that fall out of the sliding window during PiP.
-        if let item = player?.currentItem, item.duration == .indefinite,
-           let lastRange = item.seekableTimeRanges.last?.timeRangeValue {
-            let liveEdge = CMTimeRangeGetEnd(lastRange)
-            player?.seek(to: liveEdge, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                self?.player?.play()
+        result(nil)
+    }
+
+    /// Starts playback once the current item is ready. Calling play()
+    /// immediately after replaceCurrentItem is unreliable — the item may
+    /// not be ready yet.
+    private func playWhenReady() {
+        playWhenReadyObserver?.invalidate()
+        playWhenReadyObserver = nil
+        guard let item = player?.currentItem else { return }
+        if item.status == .readyToPlay {
+            player?.play()
+            return
+        }
+        playWhenReadyObserver = item.observe(\.status, options: [.new]) { [weak self] item, _ in
+            guard let self else { return }
+            if item.status == .readyToPlay {
+                self.player?.play()
+                self.playWhenReadyObserver = nil
+            } else if item.status == .failed {
+                self.playWhenReadyObserver = nil
             }
         }
+    }
 
-        result(nil)
+    /// Applies live playback settings to the current player item.
+    private func configureLiveItem() {
+        player?.automaticallyWaitsToMinimizeStalling = false
+        player?.currentItem?.preferredForwardBufferDuration = 0
+        player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = true
+        if #available(iOS 13.0, *) {
+            player?.currentItem?.automaticallyPreservesTimeOffsetFromLive = true
+        }
     }
 
     func handleConfigureForLivePlayback(call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -875,8 +934,8 @@ extension VideoPlayerView {
             }
 
 
-            // Track background PiP eligibility (we use our own custom controller
-            // instead of AVPlayerViewController's auto PiP, which can't be stopped)
+            // Enable auto background PiP on our custom controller
+            pipController?.canStartPictureInPictureAutomaticallyFromInline = true
             if let controllerIdValue = controllerId {
                 SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
             }
@@ -889,6 +948,7 @@ extension VideoPlayerView {
 
     func handleDisableAutomaticInlinePip(result: @escaping FlutterResult) {
         if #available(iOS 14.2, *) {
+            pipController?.canStartPictureInPictureAutomaticallyFromInline = false
             if let controllerIdValue = controllerId {
                 SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: false)
             }
