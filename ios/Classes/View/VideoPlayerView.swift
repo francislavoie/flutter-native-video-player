@@ -191,15 +191,15 @@ import QuartzCore
 
             // For shared players, try to get PiP settings from SharedPlayerManager
             // This ensures PiP settings persist across all views using the same controller
+            // Keep AVPlayerViewController PiP disabled — all PiP goes through
+            // our custom AVPictureInPictureController so we can stop it programmatically.
+            playerViewController.allowsPictureInPicturePlayback = false
+
             if let controllerIdValue = controllerId {
                 if let sharedSettings = SharedPlayerManager.shared.getPipSettings(for: controllerIdValue) {
-                    // Use existing shared settings
                     self.canStartPictureInPictureAutomatically = sharedSettings.canStartPictureInPictureAutomatically
-                    playerViewController.allowsPictureInPicturePlayback = sharedSettings.allowsPictureInPicture
                 } else {
-                    // First view for this controller - store the settings
                     self.canStartPictureInPictureAutomatically = argsCanStartAutomatically
-                    playerViewController.allowsPictureInPicturePlayback = argsAllowsPiP
                     SharedPlayerManager.shared.setPipSettings(
                         for: controllerIdValue,
                         allowsPictureInPicture: argsAllowsPiP,
@@ -208,9 +208,7 @@ import QuartzCore
                     )
                 }
             } else {
-                // Non-shared player - use settings from args
                 self.canStartPictureInPictureAutomatically = argsCanStartAutomatically
-                playerViewController.allowsPictureInPicturePlayback = argsAllowsPiP
             }
 
             if #available(iOS 14.2, *) {
@@ -290,6 +288,16 @@ import QuartzCore
             self,
             selector: #selector(handleAppWillEnterForeground),
             name: UIApplication.willEnterForegroundNotification,
+            object: nil
+        )
+
+        // Observe app becoming inactive to start custom PiP
+        // (replaces AVPlayerViewController's canStartPictureInPictureAutomaticallyFromInline
+        // which cannot be programmatically stopped)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleAppWillResignActive),
+            name: UIApplication.willResignActiveNotification,
             object: nil
         )
 
@@ -402,6 +410,21 @@ import QuartzCore
             handleDispose(result: result)
         default:
             result(FlutterMethodNotImplemented)
+        }
+    }
+
+    /// Creates the custom AVPictureInPictureController eagerly so it's warmed up
+    /// for background PiP. Freshly created controllers need time before
+    /// startPictureInPicture() works reliably.
+    @available(iOS 14.0, *)
+    func ensurePipController() {
+        guard pipController == nil else { return }
+        if let playerLayer = findPlayerLayer() {
+            pipController = try? AVPictureInPictureController(playerLayer: playerLayer)
+            pipController?.delegate = self
+            if let ctrl = pipController, let controllerIdValue = controllerId {
+                SharedPlayerManager.shared.setActivePipController(ctrl, for: controllerIdValue)
+            }
         }
     }
 
@@ -660,10 +683,6 @@ import QuartzCore
             // 1. This was the primary view AND auto PiP was enabled, OR
             // 2. The player is currently playing (should maintain auto PiP capability)
             if (wasPrimaryView && wasAutoEnabled) || isPlaying {
-
-                // Disable automatic PiP on this view before unregistering
-                playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
-
                 // Unregister this view first so it won't be found
                 SharedPlayerManager.shared.unregisterVideoPlayerView(viewId: viewId)
 
@@ -755,8 +774,36 @@ import QuartzCore
 
     // MARK: - App Lifecycle Handling
 
-    /// Called when app returns to foreground
-    /// Restores Now Playing info which may have been cleared by the system
+    /// Starts custom PiP when the app becomes inactive (swipe-up, app switch).
+    @objc func handleAppWillResignActive() {
+        guard #available(iOS 14.0, *) else { return }
+        guard SharedPlayerManager.shared.primaryViewForBackgroundPip() === self else { return }
+        guard !isPipCurrentlyActive else { return }
+        if let controllerIdValue = controllerId, SharedPlayerManager.shared.isManualPiPActive(controllerIdValue) {
+            return
+        }
+        guard let player = player, let currentItem = player.currentItem,
+              currentItem.status == .readyToPlay,
+              player.rate > 0,
+              AVPictureInPictureController.isPictureInPictureSupported() else { return }
+
+        if let controllerIdValue = controllerId {
+            SharedPlayerManager.shared.setManualPiPActive(controllerIdValue, active: true)
+        }
+
+        ensurePipController()
+
+        guard pipController != nil else {
+            // Controller creation failed — roll back the flag
+            if let controllerIdValue = controllerId {
+                SharedPlayerManager.shared.setManualPiPActive(controllerIdValue, active: false)
+            }
+            return
+        }
+
+        pipController?.startPictureInPicture()
+    }
+
     @objc func handleAppWillEnterForeground() {
 
         // CRITICAL: Reactivate audio session first

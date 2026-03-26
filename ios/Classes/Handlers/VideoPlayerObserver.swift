@@ -173,6 +173,13 @@ extension VideoPlayerView {
                                 if shouldEnableAutoPiP {
                                     SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
 
+                                    // Eagerly create the PiP controller so it's warmed up
+                                    // for background PiP (freshly created controllers may
+                                    // not be ready for immediate startPictureInPicture).
+                                    if #available(iOS 14.0, *) {
+                                        ensurePipController()
+                                    }
+
                                     // Ensure media info is set again after enabling PiP
                                     // This guarantees media controls work correctly in PiP mode
                                     if let mediaInfo = currentMediaInfo {

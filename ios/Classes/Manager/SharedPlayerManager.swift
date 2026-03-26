@@ -526,76 +526,57 @@ class SharedPlayerManager: NSObject {
     func setAutomaticPiPEnabled(for controllerId: Int, enabled: Bool) {
         // Clean up nil/deallocated views first
         videoPlayerViews = videoPlayerViews.filter { $0.value.view != nil }
-        
+
+        // NOTE: We intentionally do NOT set canStartPictureInPictureAutomaticallyFromInline
+        // on any AVPlayerViewController. AVPlayerViewController-managed auto PiP cannot be
+        // programmatically stopped, causing a gray PiP window. Instead, we track which
+        // controller/view should get background PiP and trigger it ourselves via a custom
+        // AVPictureInPictureController when the app enters background.
+
         if enabled {
-            // Check if manual PiP is active for this controller
             if isManualPiPActive(controllerId) {
                 return
             }
 
-            // Disable automatic PiP on all other controllers first
-            if let previousControllerId = controllerWithAutomaticPiP, previousControllerId != controllerId {
-                // Disable on ALL platform views for the previous controller
-                for (_, wrapper) in videoPlayerViews {
-                    if let view = wrapper.view, view.controllerId == previousControllerId {
-                        view.playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
-                    }
-                }
-            }
-            
-            // Find the PRIMARY (most recently played) platform view for this controller
-            
-            // First, disable ALL views for this controller
-            for (_, wrapper) in videoPlayerViews {
-                if let view = wrapper.view, view.controllerId == controllerId {
-                    view.playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
-                }
-            }
+            // Track which controller has background PiP enabled (only one at a time)
+            controllerWithAutomaticPiP = controllerId
 
-            // Then enable ONLY the primary view (the one that most recently called play)
-            var enabledOnView = false
+            // Ensure the primary view is set — fall back to any view if primary is disposed
             if let primaryViewId = primaryViewIdForController[controllerId] {
                 let key = "\(primaryViewId)"
-                if let wrapper = videoPlayerViews[key], let view = wrapper.view {
-                    if view.canStartPictureInPictureAutomatically {
-                        view.playerViewController.canStartPictureInPictureAutomaticallyFromInline = true
-                        enabledOnView = true
-                    }
-                }
-            }
-
-            // FALLBACK: If no primary view was found or it was disposed, pick ANY view for this controller
-            // This handles the case where the primary view was disposed but other views still exist
-            if !enabledOnView {
-                for (_, wrapper) in videoPlayerViews {
-                    if let view = wrapper.view, view.controllerId == controllerId {
-                        if view.canStartPictureInPictureAutomatically {
-                            view.playerViewController.canStartPictureInPictureAutomaticallyFromInline = true
-                            // Set this as the new primary view
+                if videoPlayerViews[key]?.view == nil {
+                    // Primary view disposed — find a fallback
+                    for (_, wrapper) in videoPlayerViews {
+                        if let view = wrapper.view, view.controllerId == controllerId,
+                           view.canStartPictureInPictureAutomatically {
                             primaryViewIdForController[controllerId] = view.viewId
-                            enabledOnView = true
                             break
                         }
                     }
                 }
             }
-
-            // Only set controllerWithAutomaticPiP if we actually enabled a view
-            if enabledOnView {
-                controllerWithAutomaticPiP = controllerId
-            }
         } else {
-            // Disable automatic PiP for ALL platform views of the specified controller
-            for (_, wrapper) in videoPlayerViews {
-                if let view = wrapper.view, view.controllerId == controllerId {
-                    view.playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
-                }
-            }
-            
             if controllerWithAutomaticPiP == controllerId {
                 controllerWithAutomaticPiP = nil
             }
         }
+    }
+
+    /// Returns the primary view for background PiP, or nil if none is eligible.
+    func primaryViewForBackgroundPip() -> VideoPlayerView? {
+        guard let controllerId = controllerWithAutomaticPiP else { return nil }
+        if let primaryViewId = primaryViewIdForController[controllerId],
+           let wrapper = videoPlayerViews["\(primaryViewId)"],
+           let view = wrapper.view {
+            return view
+        }
+        // Fallback: any view for the controller
+        for (_, wrapper) in videoPlayerViews {
+            if let view = wrapper.view, view.controllerId == controllerId {
+                return view
+            }
+        }
+        return nil
     }
 }
 

@@ -694,11 +694,6 @@ extension VideoPlayerView {
             // NOTE: We do this AFTER the checks, so it doesn't interfere with the next manual PiP attempt
             playerViewController.allowsPictureInPicturePlayback = false
 
-            // Also disable automatic inline PiP
-            if #available(iOS 14.2, *) {
-                playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
-            }
-
             // Get or create the PiP controller for this player layer
             // Reuse existing controller if available, or create new one
             if pipController == nil {
@@ -744,7 +739,7 @@ extension VideoPlayerView {
                         if let controllerIdValue = controllerId {
                             SharedPlayerManager.shared.setManualPiPActive(controllerIdValue, active: false)
                             // Re-enable AVPlayerViewController PiP since we're not starting
-                            playerViewController.allowsPictureInPicturePlayback = true
+                            playerViewController.allowsPictureInPicturePlayback = false
                             if #available(iOS 14.2, *) {
                                 if canStartPictureInPictureAutomatically {
                                     SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
@@ -772,14 +767,14 @@ extension VideoPlayerView {
     }
     
     /// Finds the AVPlayerLayer in the view hierarchy
-    private func findPlayerLayer() -> AVPlayerLayer? {
+    func findPlayerLayer() -> AVPlayerLayer? {
         // Get the player layer from the AVPlayerViewController's view
         if let playerView = playerViewController.view {
             return findPlayerLayerInView(playerView)
         }
         return nil
     }
-    
+
     /// Recursively searches for AVPlayerLayer in view hierarchy
     private func findPlayerLayerInView(_ view: UIView) -> AVPlayerLayer? {
         // Check if this view's layer is an AVPlayerLayer
@@ -880,13 +875,10 @@ extension VideoPlayerView {
             }
 
 
-            // Enable automatic PiP on this view controller
-            playerViewController.canStartPictureInPictureAutomaticallyFromInline = true
-
-            // Also update the stored setting if this is a shared player
+            // Track background PiP eligibility (we use our own custom controller
+            // instead of AVPlayerViewController's auto PiP, which can't be stopped)
             if let controllerIdValue = controllerId {
                 SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
-            } else {
             }
 
             result(true)
@@ -897,16 +889,9 @@ extension VideoPlayerView {
 
     func handleDisableAutomaticInlinePip(result: @escaping FlutterResult) {
         if #available(iOS 14.2, *) {
-
-            // Disable automatic PiP on this view controller
-            playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
-
-            // Also update the stored setting if this is a shared player
             if let controllerIdValue = controllerId {
                 SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: false)
-            } else {
             }
-
             result(true)
         } else {
             result(FlutterError(code: "NOT_SUPPORTED", message: "Automatic inline PiP requires iOS 14.2+", details: nil))

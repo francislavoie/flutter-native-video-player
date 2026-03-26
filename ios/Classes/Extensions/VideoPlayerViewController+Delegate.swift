@@ -107,13 +107,8 @@ extension VideoPlayerView {
 
 extension VideoPlayerView: AVPlayerViewControllerDelegate {
     public func playerViewControllerWillStartPictureInPicture(_ playerViewController: AVPlayerViewController) {
-        let isManual = controllerId.flatMap { SharedPlayerManager.shared.isManualPiPActive($0) } ?? false
-        // For manual PiP, preserve the existing custom controller.
-        // For auto PiP, create a controller from the player layer so we
-        // have a handle to call stopPictureInPicture() on later.
-        if !isManual {
-            pipController = nil
-        }
+        // Safety fallback — canStartPictureInPictureAutomaticallyFromInline is kept false,
+        // so this delegate should not fire. All PiP goes through our custom controller.
         handlePipWillStart()
     }
 
@@ -127,21 +122,9 @@ extension VideoPlayerView: AVPlayerViewControllerDelegate {
     public func playerViewControllerDidStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
         handlePipDidStop()
 
-        // Re-enable PiP playback (may have been modified during force-stop)
-        if let controllerIdValue = controllerId {
-            if let pipSettings = SharedPlayerManager.shared.getPipSettings(for: controllerIdValue) {
-                playerViewController.allowsPictureInPicturePlayback = pipSettings.allowsPictureInPicture
-            } else {
-                playerViewController.allowsPictureInPicturePlayback = true
-            }
-        }
-
-        // Re-enable automatic PiP unconditionally
-        if #available(iOS 14.2, *) {
-            if let controllerIdValue = controllerId, canStartPictureInPictureAutomatically {
-                SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
-            }
-        }
+        // Keep allowsPictureInPicturePlayback = false — all PiP goes through
+        // our custom AVPictureInPictureController, not the AVPlayerViewController.
+        // Leaving it true causes the system to start auto PiP we can't stop.
     }
 
     public func playerViewController(_ playerViewController: AVPlayerViewController, failedToStartPictureInPictureWithError error: Error) {
@@ -235,17 +218,9 @@ extension VideoPlayerView: AVPictureInPictureControllerDelegate {
         playerViewController.view.isHidden = false
         playerViewController.view.alpha = 1.0
 
-        // Re-enable AVPlayerViewController's PiP management
-        if let controllerIdValue = controllerId {
-            if let pipSettings = SharedPlayerManager.shared.getPipSettings(for: controllerIdValue) {
-                playerViewController.allowsPictureInPicturePlayback = pipSettings.allowsPictureInPicture
-            } else {
-                playerViewController.allowsPictureInPicturePlayback = true
-            }
-        }
-
-        // Destroy the custom PiP controller so it doesn't interfere with automatic PiP
-        pipController = nil
+        // Keep allowsPictureInPicturePlayback = false and pipController alive — all PiP
+        // goes through our custom AVPictureInPictureController. Keeping it alive means
+        // the next background PiP starts immediately (fresh controllers need warmup).
 
         let wasManualPiP = handlePipDidStop()
 
@@ -254,15 +229,10 @@ extension VideoPlayerView: AVPictureInPictureControllerDelegate {
             forceReregisterRemoteCommands()
         }
 
-        // Re-enable automatic PiP
+        // Re-enable background PiP tracking
         if #available(iOS 14.2, *) {
-            if let controllerIdValue = controllerId {
-                if canStartPictureInPictureAutomatically {
-                    SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
-                } else if let pipSettings = SharedPlayerManager.shared.getPipSettings(for: controllerIdValue),
-                          pipSettings.canStartPictureInPictureAutomatically {
-                    SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
-                }
+            if let controllerIdValue = controllerId, canStartPictureInPictureAutomatically {
+                SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
             }
         }
     }
