@@ -813,10 +813,18 @@ import QuartzCore
             // Also update the playback time to ensure controls show correct position
             self.updateNowPlayingPlaybackTime()
 
-            // If the player stalled during background (waiting/buffering), seek
-            // to the live edge to recover instead of staying on stale segments.
-            if let player = self.player,
-               player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
+            // Seek to live edge for live streams — the player drifts behind
+            // while backgrounded. Skip during PiP (already playing live),
+            // audio-only (seek interrupts audio), and user-paused.
+            let isAudioOnly: Bool = {
+                guard let masterUrl = self.masterPlaylistUrl,
+                      let currentUrl = (self.player?.currentItem?.asset as? AVURLAsset)?.url else { return false }
+                return currentUrl != masterUrl
+            }()
+            if !self.isPipCurrentlyActive, !isAudioOnly,
+               let player = self.player,
+               (player.rate > 0 || player.timeControlStatus == .waitingToPlayAtSpecifiedRate),
+               let item = player.currentItem, item.duration == .indefinite {
                 self.seekToLiveEdgeAndPlay()
             }
         }
