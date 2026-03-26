@@ -641,6 +641,8 @@ import QuartzCore
     }
 
     deinit {
+        playWhenReadyObserver?.invalidate()
+        playWhenReadyObserver = nil
 
         // Use the isPipCurrentlyActive flag to check if PiP is active
         let isPipActiveNow = isPipCurrentlyActive

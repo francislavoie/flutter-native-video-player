@@ -361,6 +361,21 @@ extension VideoPlayerView {
         let isAuto = qualityInfo["isAuto"] as? Bool ?? false
 
         if isAuto {
+            // If currently on audio-only (different item), reload the master playlist
+            if let masterUrl = masterPlaylistUrl,
+               let currentUrl = (player?.currentItem?.asset as? AVURLAsset)?.url,
+               currentUrl != masterUrl {
+                if let oldItem = player?.currentItem { removeItemObservers(from: oldItem) }
+                let item = AVPlayerItem(url: masterUrl)
+                player?.replaceCurrentItem(with: item)
+                addItemObservers(to: item)
+                configureLiveItem()
+                if #available(iOS 14.2, *), canStartPictureInPictureAutomatically {
+                    pipController?.canStartPictureInPictureAutomaticallyFromInline = true
+                }
+                playWhenReady()
+            }
+
             // Remove bitrate/resolution constraints — AVPlayer uses native ABR
             player?.currentItem?.preferredPeakBitRate = 0
             player?.currentItem?.preferredMaximumResolution = .zero
@@ -378,10 +393,15 @@ extension VideoPlayerView {
             if width == 0 && height == 0, let variantUrl = URL(string: urlString) {
                 // Audio-only: load the variant URL directly since ABR hints
                 // (preferredMaximumResolution) cannot force audio-only selection.
-                // playWhenReady handles play after the item reaches readyToPlay.
+                if let oldItem = player?.currentItem { removeItemObservers(from: oldItem) }
                 let item = AVPlayerItem(url: variantUrl)
                 player?.replaceCurrentItem(with: item)
+                addItemObservers(to: item)
                 configureLiveItem()
+                // Disable auto background PiP so audio continues in Dynamic Island
+                if #available(iOS 14.2, *) {
+                    pipController?.canStartPictureInPictureAutomaticallyFromInline = false
+                }
                 playWhenReady()
             } else {
                 // Video quality: if currently on audio-only (different item),
@@ -390,9 +410,15 @@ extension VideoPlayerView {
                 if let masterUrl = masterPlaylistUrl,
                    let currentUrl = (player?.currentItem?.asset as? AVURLAsset)?.url,
                    currentUrl != masterUrl {
+                    if let oldItem = player?.currentItem { removeItemObservers(from: oldItem) }
                     let item = AVPlayerItem(url: masterUrl)
                     player?.replaceCurrentItem(with: item)
+                    addItemObservers(to: item)
                     configureLiveItem()
+                    // Restore auto background PiP (was disabled for audio-only)
+                    if #available(iOS 14.2, *), canStartPictureInPictureAutomatically {
+                        pipController?.canStartPictureInPictureAutomaticallyFromInline = true
+                    }
                     replacedItem = true
                 }
 
@@ -401,18 +427,7 @@ extension VideoPlayerView {
                 player?.currentItem?.preferredMaximumResolution = CGSize(width: width, height: height)
 
                 if replacedItem {
-                    // New item — wait for readyToPlay before playing
                     playWhenReady()
-                } else {
-                    // Same item, just changed ABR hint — seek to live edge
-                    // to force keyframe re-sync
-                    if let item = player?.currentItem, item.duration == .indefinite,
-                       let lastRange = item.seekableTimeRanges.last?.timeRangeValue {
-                        let liveEdge = CMTimeRangeGetEnd(lastRange)
-                        player?.seek(to: liveEdge, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                            self?.player?.play()
-                        }
-                    }
                 }
             }
 
@@ -459,20 +474,7 @@ extension VideoPlayerView {
     }
 
     func handleConfigureForLivePlayback(call: FlutterMethodCall, result: @escaping FlutterResult) {
-        let args = call.arguments as? [String: Any]
-        let bufferDuration = args?["bufferDuration"] as? Double ?? 4.0
-
-        player?.automaticallyWaitsToMinimizeStalling = false
-        // Let AVPlayer manage its own forward buffer size (default = 0 = unlimited).
-        // A fixed small buffer (2-4s) starves the ABR algorithm of confidence,
-        // causing it to always pick low quality even on fast connections.
-        player?.currentItem?.preferredForwardBufferDuration = 0
-        player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = true
-
-        if #available(iOS 13.0, *) {
-            player?.currentItem?.automaticallyPreservesTimeOffsetFromLive = true
-        }
-
+        configureLiveItem()
         result(nil)
     }
 

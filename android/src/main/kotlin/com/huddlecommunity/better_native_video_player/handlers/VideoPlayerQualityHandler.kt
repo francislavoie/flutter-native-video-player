@@ -59,39 +59,49 @@ object VideoPlayerQualityHandler {
                         val frameRateMatch = Regex("FRAME-RATE=(\\d+\\.?\\d*)").find(line)
                         lastFrameRate = frameRateMatch?.groupValues?.get(1)?.toDouble()
                     }
-                    line.endsWith(".m3u8") && lastResolution != null -> {
+                    line.endsWith(".m3u8") -> {
                         // Resolve relative URLs against the base URL
                         val qualityUrl = when {
                             line.startsWith("http://") || line.startsWith("https://") -> line
                             line.startsWith("/") -> {
-                                // Absolute path - use the host from the base URL
                                 val baseUri = URL(url)
                                 "${baseUri.protocol}://${baseUri.host}$line"
                             }
                             else -> {
-                                // Relative path - resolve against the base URL directory
                                 val baseUrl = URL(url)
                                 val basePath = baseUrl.path.substringBeforeLast("/")
                                 "${baseUrl.protocol}://${baseUrl.host}$basePath/$line"
                             }
                         }
 
-                        val height = lastResolution!!.second
-                        val label = if (lastFrameRate != null) {
-                            "${height}p${lastFrameRate!!.roundToInt()}"
-                        } else {
-                            "${height}p"
-                        }
-
-                        qualities.add(
-                            QualityLevel(
-                                url = qualityUrl,
-                                label = label,
-                                bitrate = lastBitrate ?: 0,
-                                width = lastResolution!!.first,
-                                height = lastResolution!!.second
+                        if (lastResolution != null) {
+                            val height = lastResolution!!.second
+                            val label = if (lastFrameRate != null) {
+                                "${height}p${lastFrameRate!!.roundToInt()}"
+                            } else {
+                                "${height}p"
+                            }
+                            qualities.add(
+                                QualityLevel(
+                                    url = qualityUrl,
+                                    label = label,
+                                    bitrate = lastBitrate ?: 0,
+                                    width = lastResolution!!.first,
+                                    height = lastResolution!!.second
+                                )
                             )
-                        )
+                        } else {
+                            // Audio-only variant (no RESOLUTION tag)
+                            qualities.add(
+                                QualityLevel(
+                                    url = qualityUrl,
+                                    label = "Audio Only",
+                                    bitrate = lastBitrate ?: 0,
+                                    width = 0,
+                                    height = 0
+                                )
+                            )
+                        }
 
                         lastResolution = null
                         lastBitrate = null
