@@ -933,6 +933,7 @@ class NativeVideoPlayerController {
   /// It persists even when all platform views are disposed, allowing events to
   /// flow after calling releaseResources(). Only disposed when controller.dispose() is called.
   void _setupControllerEventChannel() {
+    _controllerEventSubscription?.cancel();
     _controllerEventChannel = EventChannel(
       'native_video_player_controller_$id',
     );
@@ -1148,8 +1149,12 @@ class NativeVideoPlayerController {
             final map = eventMap as Map<dynamic, dynamic>;
             final String eventName = map['event'] as String;
 
-            // NOTE: PiP and AirPlay events are now handled by the controller-level
-            // event channel (_handleControllerEvent) to persist when views are disposed
+            // PiP events: also handle here as fallback in case the controller-level
+            // event channel is not connected (the native side sends via both channels)
+            if (eventName == 'pipStart' || eventName == 'pipStop') {
+              _handleControllerEvent(eventMap);
+              return;
+            }
 
             // Handle AirPlay connection change event (for backward compatibility)
             if (eventName == 'airPlayConnectionChanged') {

@@ -745,6 +745,11 @@ extension VideoPlayerView {
                             SharedPlayerManager.shared.setManualPiPActive(controllerIdValue, active: false)
                             // Re-enable AVPlayerViewController PiP since we're not starting
                             playerViewController.allowsPictureInPicturePlayback = true
+                            if #available(iOS 14.2, *) {
+                                if canStartPictureInPictureAutomatically {
+                                    SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
+                                }
+                            }
                         }
                         sendResult(FlutterError(code: "PIP_NOT_POSSIBLE", message: "Picture-in-Picture is not possible at this time. Make sure the video is playing and loaded.", details: nil))
                     }
@@ -804,23 +809,23 @@ extension VideoPlayerView {
 
     func handleExitPictureInPicture(result: @escaping FlutterResult) {
         if #available(iOS 14.0, *) {
+            // Call stopPictureInPicture() unconditionally — it is a safe no-op
+            // when PiP is not active, and isPictureInPictureActive can desync
+            // from visual state on iOS.
+
             // First check this view's pipController
             if let pipController = pipController {
-                if pipController.isPictureInPictureActive {
-                    pipController.stopPictureInPicture()
-                    result(true)
-                    return
-                }
+                pipController.stopPictureInPicture()
+                result(true)
+                return
             }
 
-            // If this view doesn't have an active PiP, check other views for the same controller
-            // This handles the case where user navigated away from the detail screen back to list
+            // Check other views for the same controller (e.g. navigated away from detail to list)
             if let controllerIdValue = controllerId {
                 let allViews = SharedPlayerManager.shared.findAllViewsForController(controllerIdValue)
 
                 for view in allViews {
-                    if let otherPipController = view.pipController,
-                       otherPipController.isPictureInPictureActive {
+                    if let otherPipController = view.pipController {
                         otherPipController.stopPictureInPicture()
                         result(true)
                         return
@@ -830,26 +835,21 @@ extension VideoPlayerView {
 
             // Fallback: check SharedPlayerManager for a stored PiP controller
             if let controllerIdValue = controllerId,
-               let storedPipController = SharedPlayerManager.shared.getActivePipController(for: controllerIdValue),
-               storedPipController.isPictureInPictureActive {
+               let storedPipController = SharedPlayerManager.shared.getActivePipController(for: controllerIdValue) {
                 storedPipController.stopPictureInPicture()
                 result(true)
                 return
             }
 
-            // Final fallback: auto-PiP managed by AVPlayerViewController —
-            // sync our state so the Dart side knows PiP ended.
+            // Final fallback: auto PiP managed by AVPlayerViewController — no custom
+            // pipController exists. Apple does not expose a way to programmatically
+            // stop AVPlayerViewController-managed PiP. Sync our state so the Dart
+            // side knows PiP ended; the system PiP window persists until the user
+            // closes it via its own controls.
             if isPipCurrentlyActive {
                 isPipCurrentlyActive = false
-                sendEvent("pipStop", data: ["isPictureInPicture": false])
-                if let controllerIdValue = controllerId {
-                    SharedPlayerManager.shared.sendControllerEvent(
-                        "pipStop",
-                        data: ["isPictureInPicture": false],
-                        for: controllerIdValue
-                    )
-                    SharedPlayerManager.shared.clearActivePipController(for: controllerIdValue)
-                }
+                sendPipStopEvent()
+                handlePipDidStop()
                 result(true)
                 return
             }

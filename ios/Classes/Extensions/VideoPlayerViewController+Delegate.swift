@@ -107,6 +107,13 @@ extension VideoPlayerView {
 
 extension VideoPlayerView: AVPlayerViewControllerDelegate {
     public func playerViewControllerWillStartPictureInPicture(_ playerViewController: AVPlayerViewController) {
+        let isManual = controllerId.flatMap { SharedPlayerManager.shared.isManualPiPActive($0) } ?? false
+        // For manual PiP, preserve the existing custom controller.
+        // For auto PiP, create a controller from the player layer so we
+        // have a handle to call stopPictureInPicture() on later.
+        if !isManual {
+            pipController = nil
+        }
         handlePipWillStart()
     }
 
@@ -118,11 +125,20 @@ extension VideoPlayerView: AVPlayerViewControllerDelegate {
     }
 
     public func playerViewControllerDidStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
-        let wasManualPiP = handlePipDidStop()
+        handlePipDidStop()
 
-        // Re-enable automatic PiP for manual PiP sessions
+        // Re-enable PiP playback (may have been modified during force-stop)
+        if let controllerIdValue = controllerId {
+            if let pipSettings = SharedPlayerManager.shared.getPipSettings(for: controllerIdValue) {
+                playerViewController.allowsPictureInPicturePlayback = pipSettings.allowsPictureInPicture
+            } else {
+                playerViewController.allowsPictureInPicturePlayback = true
+            }
+        }
+
+        // Re-enable automatic PiP unconditionally
         if #available(iOS 14.2, *) {
-            if wasManualPiP, let controllerIdValue = controllerId, canStartPictureInPictureAutomatically {
+            if let controllerIdValue = controllerId, canStartPictureInPictureAutomatically {
                 SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
             }
         }

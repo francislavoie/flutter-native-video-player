@@ -197,7 +197,6 @@ class SharedPlayerManager: NSObject {
     /// Sends an event through the controller-level event channel
     func sendControllerEvent(_ eventName: String, data: [String: Any], for controllerId: Int) {
         guard let eventSink = controllerEventSinks[controllerId] else {
-            // No event sink registered - this is normal during initialization or after disposal
             return
         }
 
