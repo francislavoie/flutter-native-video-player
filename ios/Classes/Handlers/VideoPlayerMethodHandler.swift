@@ -648,6 +648,13 @@ extension VideoPlayerView {
         // Clear local player reference
         player = nil
 
+        // Deactivate the audio session when the last player is disposed so
+        // other apps can resume their audio. .notifyOthersOnDeactivation
+        // sends an interruption-ended hint to interrupted apps.
+        if !SharedPlayerManager.shared.hasActivePlayers {
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
+
         sendEvent("stopped")
         result(nil)
     }

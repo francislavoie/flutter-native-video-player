@@ -777,7 +777,14 @@ import QuartzCore
 
     @objc func handleAppWillEnterForeground() {
 
-        // CRITICAL: Reactivate audio session first
+        // Only reactivate the audio session if this player is actively
+        // producing output. Apple's guidance: playback apps should NOT
+        // blindly reactivate on foreground — doing so steals audio focus
+        // from other apps (music, podcasts) even when nothing is playing.
+        guard let player = player,
+              player.rate > 0 || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+        else { return }
+
         do {
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {

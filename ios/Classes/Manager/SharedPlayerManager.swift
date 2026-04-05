@@ -15,6 +15,9 @@ class SharedPlayerManager: NSObject {
 
     private var players: [Int: AVPlayer] = [:]
 
+    /// Whether any players are currently registered (used to decide audio session deactivation)
+    var hasActivePlayers: Bool { !players.isEmpty }
+
     /// Shared AVPlayerViewController instances (persist across view disposal)
     /// Keeps view controllers alive so PiP delegate callbacks can fire even when platform views are disposed
     private var playerViewControllers: [Int: AVPlayerViewController] = [:]
@@ -333,6 +336,9 @@ class SharedPlayerManager: NSObject {
         if #available(iOS 14.0, *) {
             activePipControllers.removeAll()
         }
+
+        // Deactivate audio session so other apps can resume their audio.
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     // MARK: - AirPlay Route Detection

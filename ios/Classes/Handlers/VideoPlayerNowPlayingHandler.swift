@@ -72,8 +72,10 @@ extension VideoPlayerView {
     /// Sets up the Now Playing info for the Control Center and Lock Screen
     func setupNowPlayingInfo(mediaInfo: [String: Any]) {
 
-        // CRITICAL: Ensure audio session is active
-        // iOS won't show Now Playing info if the audio session is not active
+        // Only activate audio session if the player is alive — a stale
+        // invocation after dispose would steal audio focus from other apps.
+        guard player != nil else { return }
+
         do {
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
