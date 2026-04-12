@@ -16,7 +16,11 @@ class SharedPlayerManager: NSObject {
     private var players: [Int: AVPlayer] = [:]
 
     /// Whether any players are currently registered (used to decide audio session deactivation)
-    var hasActivePlayers: Bool { !players.isEmpty }
+    var hasActivePlayers: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !players.isEmpty
+    }
 
     /// Shared AVPlayerViewController instances (persist across view disposal)
     /// Keeps view controllers alive so PiP delegate callbacks can fire even when platform views are disposed

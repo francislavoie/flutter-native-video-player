@@ -23,13 +23,24 @@ extension VideoPlayerView {
         let mediaInfo = arguments["mediaInfo"] as? [String: Any]
         let drmConfig = arguments["drmConfig"] as? [String: Any]
 
-        // Store media info for Now Playing
+        // Store media info for Now Playing. Merge with existing rather than
+        // replacing outright — setMediaInfo may have already delivered the
+        // artworkUrl before this loadUrl call, and the controller's initial
+        // mediaInfo omits null fields.
         if let mediaInfo = mediaInfo {
-            currentMediaInfo = mediaInfo
+            if let existing = currentMediaInfo,
+               mediaInfo["artworkUrl"] == nil,
+               let existingArtwork = existing["artworkUrl"] {
+                var merged = mediaInfo
+                merged["artworkUrl"] = existingArtwork
+                currentMediaInfo = merged
+            } else {
+                currentMediaInfo = mediaInfo
+            }
 
             // Also store in SharedPlayerManager to persist across view recreations
             if let controllerIdValue = controllerId {
-                SharedPlayerManager.shared.setMediaInfo(for: controllerIdValue, mediaInfo: mediaInfo)
+                SharedPlayerManager.shared.setMediaInfo(for: controllerIdValue, mediaInfo: currentMediaInfo!)
             }
         }
 

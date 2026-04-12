@@ -45,7 +45,7 @@ class NativeVideoPlayerController {
   NativeVideoPlayerController({
     required this.id,
     this.autoPlay = false,
-    this.mediaInfo,
+    NativeVideoPlayerMediaInfo? mediaInfo,
     this.allowsPictureInPicture = true,
     this.canStartPictureInPictureAutomatically = true,
     this.lockToLandscape = true,
@@ -53,7 +53,7 @@ class NativeVideoPlayerController {
     this.enableLooping = false,
     this.showNativeControls = true,
     List<DeviceOrientation>? preferredOrientations,
-  }) {
+  }) : mediaInfo = mediaInfo {
     // Set preferred orientations if provided
     if (preferredOrientations != null) {
       FullscreenManager.setPreferredOrientations(preferredOrientations);
@@ -127,8 +127,10 @@ class NativeVideoPlayerController {
   /// Whether to lock orientation to landscape in fullscreen mode
   final bool lockToLandscape;
 
-  /// Optional media information (title, subtitle, artwork) for Now Playing display
-  final NativeVideoPlayerMediaInfo? mediaInfo;
+  /// Media information (title, subtitle, artwork) for Now Playing display.
+  /// Updated by [setMediaInfo] so that subsequent [loadUrl] calls send the
+  /// latest version to native (avoids race where artwork arrives before load).
+  NativeVideoPlayerMediaInfo? mediaInfo;
 
   /// Whether Picture-in-Picture mode is allowed
   final bool allowsPictureInPicture;
@@ -1683,8 +1685,11 @@ class NativeVideoPlayerController {
     await _methodChannel?.setQuality(quality);
   }
 
-  /// Updates the media info (Now Playing metadata) for the player
+  /// Updates the media info (Now Playing metadata) for the player.
+  /// Also updates the local [mediaInfo] field so subsequent [loadUrl] calls
+  /// send the latest version to native.
   Future<void> setMediaInfo(NativeVideoPlayerMediaInfo info) async {
+    mediaInfo = info;
     await _methodChannel?.setMediaInfo(info.toMap());
   }
 
