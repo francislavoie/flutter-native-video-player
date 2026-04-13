@@ -45,7 +45,7 @@ class NativeVideoPlayerController {
   NativeVideoPlayerController({
     required this.id,
     this.autoPlay = false,
-    NativeVideoPlayerMediaInfo? mediaInfo,
+    this.mediaInfo,
     this.allowsPictureInPicture = true,
     this.canStartPictureInPictureAutomatically = true,
     this.lockToLandscape = true,
@@ -53,7 +53,7 @@ class NativeVideoPlayerController {
     this.enableLooping = false,
     this.showNativeControls = true,
     List<DeviceOrientation>? preferredOrientations,
-  }) : mediaInfo = mediaInfo {
+  }) {
     // Set preferred orientations if provided
     if (preferredOrientations != null) {
       FullscreenManager.setPreferredOrientations(preferredOrientations);

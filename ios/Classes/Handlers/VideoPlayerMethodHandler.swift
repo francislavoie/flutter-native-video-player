@@ -477,8 +477,15 @@ extension VideoPlayerView {
     /// Applies live playback settings to the current player item.
     private func configureLiveItem() {
         player?.automaticallyWaitsToMinimizeStalling = false
-        player?.currentItem?.preferredForwardBufferDuration = 0
-        player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = true
+        // Cap forward buffer so AVPlayer doesn't prefetch 20-60s of segments
+        // ahead (default with preferredForwardBufferDuration = 0). Bounds
+        // network + decode work; stall recovery at the Dart layer handles the
+        // rare case where 6s isn't enough headroom.
+        player?.currentItem?.preferredForwardBufferDuration = 6
+        // Don't keep fetching segments while paused. When the user resumes,
+        // we explicitly seek to the live edge anyway, so the pre-fetched
+        // segments would be wasted.
+        player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         if #available(iOS 13.0, *) {
             player?.currentItem?.automaticallyPreservesTimeOffsetFromLive = true
         }
@@ -986,8 +993,9 @@ extension VideoPlayerView {
             self.timeObserver = nil
         }
 
-        // Update Now Playing info every second
-        let interval = CMTime(seconds: 0.5, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
+        // Update Now Playing info every second (live streams don't need
+        // sub-second elapsed-time display since there's no scrubbing).
+        let interval = CMTime(seconds: 1.0, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
         timeObserver = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] _ in
             guard let self = self, let player = self.player, let currentItem = player.currentItem else { return }
 
