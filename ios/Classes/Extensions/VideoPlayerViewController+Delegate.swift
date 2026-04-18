@@ -70,6 +70,11 @@ extension VideoPlayerView {
             SharedPlayerManager.shared.setManualPiPActive(controllerIdValue, active: false)
         }
 
+        // Emit pipStop once here — not from WillStop — so Dart doesn't receive
+        // the event while isPipCurrentlyActive is still true and doesn't get a
+        // second copy from emitCurrentState below.
+        sendPipStopEvent()
+
         var mediaInfo = currentMediaInfo
         if mediaInfo == nil, let controllerIdValue = controllerId {
             mediaInfo = SharedPlayerManager.shared.getMediaInfo(for: controllerIdValue)
@@ -92,11 +97,11 @@ extension VideoPlayerView {
         }
 
         if eventSink != nil {
-            emitCurrentState()
+            emitCurrentState(includePipState: false)
         } else if let controllerIdValue = controllerId {
             let allViews = SharedPlayerManager.shared.findAllViewsForController(controllerIdValue)
             for view in allViews where view.eventSink != nil {
-                view.emitCurrentState()
+                view.emitCurrentState(includePipState: false)
                 break
             }
         }
@@ -116,7 +121,8 @@ extension VideoPlayerView: AVPlayerViewControllerDelegate {
     }
 
     public func playerViewControllerWillStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
-        sendPipStopEvent()
+        // pipStop is emitted from handlePipDidStop() once isPipCurrentlyActive
+        // has been cleared — emitting here would race with the actual teardown.
     }
 
     public func playerViewControllerDidStopPictureInPicture(_ playerViewController: AVPlayerViewController) {
@@ -210,7 +216,8 @@ extension VideoPlayerView: AVPictureInPictureControllerDelegate {
     }
 
     public func pictureInPictureControllerWillStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        sendPipStopEvent()
+        // pipStop is emitted from handlePipDidStop() once isPipCurrentlyActive
+        // has been cleared — emitting here would race with the actual teardown.
     }
 
     public func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
@@ -241,6 +248,19 @@ extension VideoPlayerView: AVPictureInPictureControllerDelegate {
         // Ensure view is visible if PiP fails
         playerViewController.view.isHidden = false
         playerViewController.view.alpha = 1.0
+
+        // Undo state changes from handlePipWillStart: clears isPipCurrentlyActive,
+        // clears the manual-PiP flag (otherwise auto-PiP stays permanently blocked),
+        // and emits pipStop so Dart doesn't think PiP is still active.
+        handlePipDidStop()
+
+        // Re-enable auto-PiP tracking — handlePipWillStart may have fired
+        // before the failure and disabled it.
+        if #available(iOS 14.2, *) {
+            if let controllerIdValue = controllerId, canStartPictureInPictureAutomatically {
+                SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
+            }
+        }
     }
 
     public func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
