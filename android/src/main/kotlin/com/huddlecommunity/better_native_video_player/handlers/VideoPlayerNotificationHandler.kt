@@ -12,16 +12,17 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import android.support.v4.media.session.MediaSessionCompat
 import androidx.core.app.NotificationCompat
-import androidx.media.app.NotificationCompat as MediaNotificationCompat
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaStyleNotificationHelper
 import androidx.media3.session.SessionToken
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.net.URL
@@ -52,6 +53,10 @@ class VideoPlayerNotificationHandler(
     // Store current metadata separately to avoid reading stale data from player
     private var currentTitle: String = "Video"
     private var currentSubtitle: String = ""
+
+    // Scope for async artwork downloads — cancelled in release() so late
+    // completions don't fire on a torn-down handler.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     init {
         createNotificationChannel()
@@ -271,18 +276,9 @@ class VideoPlayerNotificationHandler(
         val appInfo = context.applicationInfo
         val iconResId = appInfo.icon
 
-        // Convert Media3 SessionToken to MediaSessionCompat.Token for notification
-        // Media3 1.4.0+ requires us to extract the token differently
-        val token = try {
-            // Use reflection to access the session compat token
-            val method = session.javaClass.getMethod("getSessionCompatToken")
-            method.invoke(session) as? MediaSessionCompat.Token
-        } catch (e: Exception) {
-            // If reflection fails (Media3 1.4.0+), create a token from the session's underlying binder
-            Log.w(TAG, "getSessionCompatToken not available, using alternative method")
-            null
-        }
-
+        // Apply the Media3-provided MediaStyle, which takes the session directly —
+        // no reflection or token extraction. Required for lock-screen transport
+        // controls and system-recognized media category.
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(artist)
@@ -292,18 +288,7 @@ class VideoPlayerNotificationHandler(
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
-
-        // Only set media session token if we successfully obtained it
-        if (token != null) {
-            builder.setStyle(
-                MediaNotificationCompat.MediaStyle()
-                    .setMediaSession(token)
-            )
-        } else {
-            // Fallback: create notification without media session integration
-            // Controls will still work through MediaSession, just not integrated in notification
-            Log.w(TAG, "Creating notification without MediaSession token integration")
-        }
+            .setStyle(MediaStyleNotificationHelper.MediaStyle(session))
 
         return builder.build()
     }
@@ -350,7 +335,7 @@ class VideoPlayerNotificationHandler(
      * Loads artwork from URL
      */
     private fun loadArtwork(url: String, callback: (Bitmap?) -> Unit) {
-        CoroutineScope(Dispatchers.IO).launch {
+        scope.launch {
             try {
                 val connection = URL(url).openConnection()
                 val bitmap = BitmapFactory.decodeStream(connection.getInputStream())
@@ -381,6 +366,7 @@ class VideoPlayerNotificationHandler(
     fun release() {
         player.removeListener(playerListener)
         hideNotification()
+        scope.cancel()
 
         mediaSession?.release()
         mediaSession = null
