@@ -11,7 +11,10 @@ import MediaPlayer
 class SharedPlayerManager: NSObject {
     static let shared = SharedPlayerManager()
 
-    private let lock = NSLock()
+    /// Serializes access to every mutable dictionary/set below.
+    /// Recursive so a locked method can call another locked method
+    /// (e.g. setAutomaticPiPEnabled → isManualPiPActive) without deadlocking.
+    private let lock = NSRecursiveLock()
 
     private var players: [Int: AVPlayer] = [:]
 
@@ -96,6 +99,8 @@ class SharedPlayerManager: NSObject {
     /// Gets or creates a player for the given controller ID
     /// Returns a tuple (AVPlayer, Bool) where the Bool indicates if the player already existed (true) or was newly created (false)
     func getOrCreatePlayer(for controllerId: Int) -> (AVPlayer, Bool) {
+        lock.lock()
+        defer { lock.unlock() }
         if let existingPlayer = players[controllerId] {
             return (existingPlayer, true)
         }
@@ -110,6 +115,8 @@ class SharedPlayerManager: NSObject {
     /// Returns a tuple (AVPlayer, AVPlayerViewController, Bool) where the Bool indicates if they already existed
     /// This ensures the view controller persists across platform view disposal so PiP delegate callbacks continue to work
     func getOrCreatePlayerAndViewController(for controllerId: Int) -> (AVPlayer, AVPlayerViewController, Bool) {
+        lock.lock()
+        defer { lock.unlock() }
         if let existingPlayer = players[controllerId],
            let existingViewController = playerViewControllers[controllerId] {
             return (existingPlayer, existingViewController, true)
@@ -131,6 +138,8 @@ class SharedPlayerManager: NSObject {
     /// Sets PiP settings for a controller
     /// This ensures the settings persist across all views using the same controller
     func setPipSettings(for controllerId: Int, allowsPictureInPicture: Bool, canStartPictureInPictureAutomatically: Bool, showNativeControls: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
         pipSettings[controllerId] = PipSettings(
             allowsPictureInPicture: allowsPictureInPicture,
             canStartPictureInPictureAutomatically: canStartPictureInPictureAutomatically,
@@ -141,6 +150,8 @@ class SharedPlayerManager: NSObject {
     /// Gets PiP settings for a controller
     /// Returns nil if no settings have been stored for this controller
     func getPipSettings(for controllerId: Int) -> PipSettings? {
+        lock.lock()
+        defer { lock.unlock() }
         return pipSettings[controllerId]
     }
 
@@ -190,22 +201,28 @@ class SharedPlayerManager: NSObject {
     /// Registers a controller-level event sink for persistent events
     /// This sink receives PiP and AirPlay events independently of platform views
     func registerControllerEventSink(_ eventSink: @escaping FlutterEventSink, for controllerId: Int) {
+        lock.lock()
         controllerEventSinks[controllerId] = eventSink
+        lock.unlock()
 
-        // Send initial controller state
+        // Send initial controller state (reads globalRouteDetector, which
+        // itself locks; call outside the lock we just released).
         sendInitialControllerState(for: controllerId, to: eventSink)
     }
 
     /// Unregisters a controller-level event sink
     func unregisterControllerEventSink(for controllerId: Int) {
+        lock.lock()
+        defer { lock.unlock() }
         controllerEventSinks.removeValue(forKey: controllerId)
     }
 
     /// Sends an event through the controller-level event channel
     func sendControllerEvent(_ eventName: String, data: [String: Any], for controllerId: Int) {
-        guard let eventSink = controllerEventSinks[controllerId] else {
-            return
-        }
+        lock.lock()
+        let sink = controllerEventSinks[controllerId]
+        lock.unlock()
+        guard let eventSink = sink else { return }
 
         var event = data
         event["event"] = eventName
@@ -227,7 +244,10 @@ class SharedPlayerManager: NSObject {
         }
 
         // Send initial AirPlay availability from global route detector
-        if let detector = globalRouteDetector {
+        lock.lock()
+        let detector = globalRouteDetector
+        lock.unlock()
+        if let detector = detector {
             let airplayAvailabilityEvent: [String: Any] = [
                 "event": "airPlayAvailabilityChanged",
                 "isAvailable": detector.isRouteDetectionEnabled && detector.multipleRoutesDetected
@@ -243,6 +263,8 @@ class SharedPlayerManager: NSObject {
 
     /// Stops and clears player from all views using this controller
     func stopAllViewsForController(_ controllerId: Int) {
+        lock.lock()
+        defer { lock.unlock() }
 
         guard let player = players[controllerId] else {
             return
@@ -253,7 +275,6 @@ class SharedPlayerManager: NSObject {
         player.replaceCurrentItem(with: nil)
 
         // Remove time observers and clear player reference from all views
-        var clearedViewCount = 0
         for (_, weakView) in videoPlayerViews {
             if let view = weakView.view, view.controllerId == controllerId {
                 if let observer = view.timeObserver {
@@ -261,16 +282,16 @@ class SharedPlayerManager: NSObject {
                     view.timeObserver = nil
                 }
                 view.player = nil
-                clearedViewCount += 1
             }
         }
-
     }
 
     /// Removes a player (called when explicitly disposed)
     func removePlayer(for controllerId: Int) {
+        lock.lock()
+        defer { lock.unlock() }
 
-        // First stop all views using this player
+        // First stop all views using this player (recursive lock allows nested call)
         stopAllViewsForController(controllerId)
 
         // Remove player from manager
@@ -323,6 +344,9 @@ class SharedPlayerManager: NSObject {
 
     /// Clears all players (e.g., on logout)
     func clearAll() {
+        lock.lock()
+        defer { lock.unlock() }
+
         // Dispose all view controllers
         for (_, viewController) in playerViewControllers {
             viewController.player = nil
@@ -364,6 +388,8 @@ class SharedPlayerManager: NSObject {
     /// This monitors AirPlay device availability across the entire app
     @available(iOS 11.0, *)
     func startAirPlayRouteDetection() {
+        lock.lock()
+        defer { lock.unlock() }
 
         // Clean up any existing detector
         if let existingDetector = globalRouteDetector {
@@ -384,7 +410,8 @@ class SharedPlayerManager: NSObject {
         )
 
 
-        // Send initial availability state
+        // Send initial availability state (sendAirPlayAvailabilityEvent takes
+        // the recursive lock itself — safe to call from here).
         if let isAvailable = globalRouteDetector?.multipleRoutesDetected {
             sendAirPlayAvailabilityEvent(isAvailable: isAvailable)
         }
@@ -393,6 +420,8 @@ class SharedPlayerManager: NSObject {
     /// Stops global AirPlay route detection
     @available(iOS 11.0, *)
     func stopAirPlayRouteDetection() {
+        lock.lock()
+        defer { lock.unlock() }
 
         guard let detector = globalRouteDetector else {
             return
@@ -406,15 +435,15 @@ class SharedPlayerManager: NSObject {
 
     /// Sends AirPlay availability event to Flutter through all registered views
     private func sendAirPlayAvailabilityEvent(isAvailable: Bool) {
-        // Clean up nil/deallocated views first
+        lock.lock()
+        // Clean up nil/deallocated views first, then snapshot live views so
+        // we don't call into Flutter while holding the lock.
         videoPlayerViews = videoPlayerViews.filter { $0.value.view != nil }
+        let liveViews = videoPlayerViews.values.compactMap { $0.view }
+        lock.unlock()
 
-
-        // Send event through all registered views
-        for (_, wrapper) in videoPlayerViews {
-            if let view = wrapper.view {
-                view.sendEvent("airPlayAvailabilityChanged", data: ["isAvailable": isAvailable])
-            }
+        for view in liveViews {
+            view.sendEvent("airPlayAvailabilityChanged", data: ["isAvailable": isAvailable])
         }
     }
 
@@ -422,22 +451,29 @@ class SharedPlayerManager: NSObject {
     override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
         if keyPath == "multipleRoutesDetected" {
             if #available(iOS 11.0, *) {
-                if let isAvailable = globalRouteDetector?.multipleRoutesDetected {
+                lock.lock()
+                let isAvailable = globalRouteDetector?.multipleRoutesDetected
+                lock.unlock()
+                if let isAvailable = isAvailable {
                     sendAirPlayAvailabilityEvent(isAvailable: isAvailable)
                 }
             }
         }
     }
-    
+
     /// Register a VideoPlayerView instance
     /// Multiple views can be registered for the same controller (e.g., list + detail screen)
     func registerVideoPlayerView(_ view: VideoPlayerView, viewId: Int64) {
+        lock.lock()
+        defer { lock.unlock() }
         let key = "\(viewId)"
         videoPlayerViews[key] = WeakVideoPlayerViewWrapper(view: view)
     }
-    
+
     /// Unregister a VideoPlayerView when it's disposed
     func unregisterVideoPlayerView(viewId: Int64) {
+        lock.lock()
+        defer { lock.unlock() }
         let key = "\(viewId)"
         videoPlayerViews.removeValue(forKey: key)
     }
@@ -445,6 +481,8 @@ class SharedPlayerManager: NSObject {
     /// Find another active view for a given controller (excluding a specific viewId)
     /// Returns the view instance if found, nil otherwise
     func findAnotherViewForController(_ controllerId: Int, excluding excludedViewId: Int64) -> VideoPlayerView? {
+        lock.lock()
+        defer { lock.unlock() }
         // Clean up nil/deallocated views first
         videoPlayerViews = videoPlayerViews.filter { $0.value.view != nil }
 
@@ -463,6 +501,8 @@ class SharedPlayerManager: NSObject {
     /// Find all active views for a given controller
     /// Returns an array of view instances
     func findAllViewsForController(_ controllerId: Int) -> [VideoPlayerView] {
+        lock.lock()
+        defer { lock.unlock() }
         // Clean up nil/deallocated views first
         videoPlayerViews = videoPlayerViews.filter { $0.value.view != nil }
 
@@ -478,11 +518,15 @@ class SharedPlayerManager: NSObject {
 
     /// Check if a controller is currently the active one for automatic PiP
     func isControllerActiveForAutoPiP(_ controllerId: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
         return controllerWithAutomaticPiP == controllerId
     }
 
     /// Mark that manual PiP is active for a controller
     func setManualPiPActive(_ controllerId: Int, active: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
         if active {
             controllersWithManualPiP.insert(controllerId)
         } else {
@@ -492,6 +536,8 @@ class SharedPlayerManager: NSObject {
 
     /// Check if manual PiP is active for a controller
     func isManualPiPActive(_ controllerId: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
         return controllersWithManualPiP.contains(controllerId)
     }
 
@@ -499,18 +545,24 @@ class SharedPlayerManager: NSObject {
     /// This allows PiP to be exited even after the originating view is disposed.
     @available(iOS 14.0, *)
     func setActivePipController(_ pipController: AVPictureInPictureController, for controllerId: Int) {
+        lock.lock()
+        defer { lock.unlock() }
         activePipControllers[controllerId] = pipController
     }
 
     /// Clear the active PiP controller for a given controller ID.
     @available(iOS 14.0, *)
     func clearActivePipController(for controllerId: Int) {
+        lock.lock()
+        defer { lock.unlock() }
         activePipControllers.removeValue(forKey: controllerId)
     }
 
     /// Get the active PiP controller for a given controller ID, if any.
     @available(iOS 14.0, *)
     func getActivePipController(for controllerId: Int) -> AVPictureInPictureController? {
+        lock.lock()
+        defer { lock.unlock() }
         return activePipControllers[controllerId]
     }
 
@@ -529,16 +581,22 @@ class SharedPlayerManager: NSObject {
     /// Set the primary (currently playing) view for a controller
     /// This should be called whenever play() is called on a view
     func setPrimaryView(_ viewId: Int64, for controllerId: Int) {
+        lock.lock()
+        defer { lock.unlock() }
         primaryViewIdForController[controllerId] = viewId
     }
 
     /// Check if a specific view is the primary view for a controller
     func isPrimaryView(_ viewId: Int64, for controllerId: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
         return primaryViewIdForController[controllerId] == viewId
     }
 
     /// Get the primary view ID for a controller (if any)
     func getPrimaryViewId(for controllerId: Int) -> Int64? {
+        lock.lock()
+        defer { lock.unlock() }
         return primaryViewIdForController[controllerId]
     }
     
@@ -547,6 +605,9 @@ class SharedPlayerManager: NSObject {
     /// IMPORTANT: Only enables on the MOST RECENT (primary) view for that controller
     @available(iOS 14.2, *)
     func setAutomaticPiPEnabled(for controllerId: Int, enabled: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+
         // Clean up nil/deallocated views first
         videoPlayerViews = videoPlayerViews.filter { $0.value.view != nil }
 
@@ -557,6 +618,7 @@ class SharedPlayerManager: NSObject {
         // AVPictureInPictureController when the app enters background.
 
         if enabled {
+            // isManualPiPActive re-acquires the recursive lock — safe here.
             if isManualPiPActive(controllerId) {
                 return
             }
