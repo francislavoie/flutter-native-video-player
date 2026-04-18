@@ -96,15 +96,23 @@ extension VideoPlayerView {
             nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = album
         }
 
-        // --- Playback duration & elapsed time ---
-        if let duration = player?.currentItem?.asset.duration {
+        // --- Live stream flag ---
+        // Tell the system this is a live broadcast. Lock screen and Control
+        // Center hide the scrubber / elapsed-time indicator and show "LIVE"
+        // instead — which is correct UX and lets the system skip meaningless
+        // per-second elapsed-time updates.
+        let isLive = player?.currentItem?.duration.isIndefinite ?? true
+        nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = isLive
+
+        // --- Playback duration & elapsed time (VOD only) ---
+        if !isLive, let duration = player?.currentItem?.asset.duration {
             let durationSeconds = CMTimeGetSeconds(duration)
             if durationSeconds.isFinite {
                 nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = durationSeconds
             }
         }
 
-        if let currentTime = player?.currentTime() {
+        if !isLive, let currentTime = player?.currentTime() {
             let elapsedSeconds = CMTimeGetSeconds(currentTime)
             if elapsedSeconds.isFinite {
                 nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsedSeconds
@@ -291,14 +299,30 @@ extension VideoPlayerView {
             return
         }
 
-        var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        let isLive = player.currentItem?.duration.isIndefinite ?? true
 
+        // For live streams the lock screen shows "LIVE" — no elapsed-time
+        // field is needed, and rewriting MPNowPlayingInfoCenter every second
+        // is pure noise. Only rate writes are still useful (play/pause state).
+        if isLive {
+            var nowPlayingInfo =
+                MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+            if (nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] as? Float)
+                == player.rate
+            {
+                return
+            }
+            nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = player.rate
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+            return
+        }
+
+        var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
         let currentTime = player.currentTime()
         let elapsedSeconds = CMTimeGetSeconds(currentTime)
         if elapsedSeconds.isFinite {
             nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsedSeconds
         }
-
         nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = player.rate
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
     }
