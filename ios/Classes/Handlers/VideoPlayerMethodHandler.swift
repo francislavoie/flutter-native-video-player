@@ -477,15 +477,8 @@ extension VideoPlayerView {
     /// Applies live playback settings to the current player item.
     private func configureLiveItem() {
         player?.automaticallyWaitsToMinimizeStalling = false
-        // Cap forward buffer so AVPlayer doesn't prefetch 20-60s of segments
-        // ahead (default with preferredForwardBufferDuration = 0). Bounds
-        // network + decode work; stall recovery at the Dart layer handles the
-        // rare case where 6s isn't enough headroom.
-        player?.currentItem?.preferredForwardBufferDuration = 6
-        // Don't keep fetching segments while paused. When the user resumes,
-        // we explicitly seek to the live edge anyway, so the pre-fetched
-        // segments would be wasted.
-        player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        player?.currentItem?.preferredForwardBufferDuration = 0
+        player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = true
         if #available(iOS 13.0, *) {
             player?.currentItem?.automaticallyPreservesTimeOffsetFromLive = true
         }
