@@ -389,15 +389,17 @@ class VideoPlayerView(
             
             // Notify Flutter that fullscreen was entered
             eventHandler.sendEvent("fullscreenChange", mapOf("isFullscreen" to true))
+            isFullScreen = true
         } else {
+            // Flip the flag before exiting so the dialog's onDismissListener —
+            // which fires during exitFullscreenNative — sees the updated state
+            // and doesn't double-call back into this path.
+            isFullScreen = false
             exitFullscreenNative(activity)
-            
+
             // Notify Flutter that fullscreen was exited
             eventHandler.sendEvent("fullscreenChange", mapOf("isFullscreen" to false))
         }
-
-        // Update internal state
-        isFullScreen = enteringFullScreen
         
         // Update the fullscreen button icon to reflect the new state
         // Use a delay to ensure the view transition has completed

@@ -538,15 +538,19 @@ class VideoPlayerMethodHandler(
             val width = qualityInfo["width"] as? Int ?: Int.MAX_VALUE
             val height = qualityInfo["height"] as? Int ?: Int.MAX_VALUE
 
-            // Pin to this quality — ExoPlayer switches at the next
-            // segment boundary without interrupting playback.
-            trackSelector.setParameters(
-                trackSelector.buildUponParameters()
-                    .setMinVideoSize(width, height)
-                    .setMaxVideoSize(width, height)
-                    .setMinVideoBitrate(bitrate)
-                    .setMaxVideoBitrate(bitrate)
-            )
+            // Pin to this quality — ExoPlayer switches at the next segment
+            // boundary without interrupting playback. Clear size constraints
+            // when width/height are unset (MAX_VALUE) to avoid filtering out
+            // every track; same for audio-only (0,0) which has no video size.
+            val params = trackSelector.buildUponParameters()
+                .setMinVideoBitrate(bitrate)
+                .setMaxVideoBitrate(bitrate)
+            if (width > 0 && width != Int.MAX_VALUE && height > 0 && height != Int.MAX_VALUE) {
+                params.setMinVideoSize(width, height).setMaxVideoSize(width, height)
+            } else {
+                params.clearVideoSizeConstraints()
+            }
+            trackSelector.setParameters(params)
 
             eventHandler.sendEvent("qualityChange", mapOf(
                 "url" to (url ?: ""),
