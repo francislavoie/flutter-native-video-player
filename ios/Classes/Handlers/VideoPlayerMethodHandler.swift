@@ -154,13 +154,8 @@ extension VideoPlayerView {
         // --- Set up periodic time observer for Now Playing elapsed time updates ---
         setupPeriodicTimeObserver()
 
-        // --- Listen for end of playback ---
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(videoDidEnd),
-            name: .AVPlayerItemDidPlayToEndTime,
-            object: playerItem
-        )
+        // (AVPlayerItemDidPlayToEndTime is already registered inside addItemObservers
+        // above — registering it twice fires videoDidEnd twice per end-of-stream.)
 
         // --- Observe status (wait for ready) ---
         var statusObserver: NSKeyValueObservation?
@@ -561,8 +556,10 @@ extension VideoPlayerView {
             return
         }
 
-        // Find the root view controller
-        guard let rootViewController = UIApplication.shared.keyWindow?.rootViewController else {
+        // Find the root view controller. UIApplication.keyWindow is deprecated
+        // in iOS 13+ and returns nil on multi-scene iPadOS; iterate connected
+        // scenes to find the active key window.
+        guard let rootViewController = Self.activeKeyWindow()?.rootViewController else {
             result(FlutterError(code: "NO_VIEW_CONTROLLER", message: "Could not find root view controller", details: nil))
             return
         }
@@ -674,7 +671,7 @@ extension VideoPlayerView {
     }
 
     func handleEnterFullScreen(result: @escaping FlutterResult) {
-        if let viewController = UIApplication.shared.keyWindow?.rootViewController {
+        if let viewController = Self.activeKeyWindow()?.rootViewController {
             // Create a NEW player view controller for fullscreen
             // This prevents the embedded view from being removed from Flutter's view hierarchy
             let fullscreenPlayerViewController = AVPlayerViewController()
@@ -1202,5 +1199,20 @@ extension VideoPlayerView {
         ])
 
         result(nil)
+    }
+
+    /// Returns the active key window across all connected scenes.
+    /// Replaces the deprecated `UIApplication.shared.keyWindow`, which returns
+    /// nil or the wrong window on multi-scene iPadOS.
+    static func activeKeyWindow() -> UIWindow? {
+        return UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .filter { $0.activationState == .foregroundActive }
+            .flatMap { $0.windows }
+            .first { $0.isKeyWindow }
+            ?? UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .flatMap { $0.windows }
+                .first { $0.isKeyWindow }
     }
 }
