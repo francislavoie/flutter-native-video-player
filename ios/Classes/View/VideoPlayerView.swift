@@ -303,10 +303,10 @@ import QuartzCore
             object: AVAudioSession.sharedInstance()
         )
 
-        // Set up AirPlay route detector (iOS 11.0+)
-        if #available(iOS 11.0, *) {
-            setupAirPlayRouteDetector()
-        }
+        // AVRouteDetector is opt-in via the `startAirPlayDetection` method
+        // channel (enables the shared detector in SharedPlayerManager). Apple
+        // warns route detection "significantly increases power consumption",
+        // so the per-view detector is no longer created eagerly.
     }
 
     public func view() -> UIView {
