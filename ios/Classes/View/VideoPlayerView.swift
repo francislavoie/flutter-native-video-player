@@ -514,11 +514,16 @@ import QuartzCore
         }
     }
 
-    /// Emits all current player states to ensure UI is in sync
+    /// Emits all current player states to ensure UI is in sync.
     /// This is useful after events like exiting PiP where the UI needs to refresh.
-    /// Pass `includePipState: false` when a pipStart/pipStop event has already
-    /// been emitted by the caller to avoid a duplicate.
-    public func emitCurrentState(includePipState: Bool = true) {
+    public func emitCurrentState() {
+        emitPlaybackState()
+        emitPipState()
+    }
+
+    /// Emits just the time/playback state — no PiP event.
+    /// Used after a pipStart/pipStop has already been emitted inline.
+    public func emitPlaybackState() {
         guard let player = player, let currentItem = player.currentItem else {
             return
         }
@@ -561,16 +566,17 @@ import QuartzCore
         @unknown default:
             break
         }
+    }
 
-        if includePipState {
-            let isPipActive = isPipCurrentlyActive ||
-                              (controllerId.flatMap { SharedPlayerManager.shared.isPipActiveForController($0) } ?? false)
+    /// Emits the current PiP state (pipStart or pipStop).
+    public func emitPipState() {
+        let isPipActive = isPipCurrentlyActive ||
+                          (controllerId.flatMap { SharedPlayerManager.shared.isPipActiveForController($0) } ?? false)
 
-            if isPipActive {
-                sendEvent("pipStart", data: ["isPictureInPicture": true])
-            } else {
-                sendEvent("pipStop", data: ["isPictureInPicture": false])
-            }
+        if isPipActive {
+            sendEvent("pipStart", data: ["isPictureInPicture": true])
+        } else {
+            sendEvent("pipStop", data: ["isPictureInPicture": false])
         }
     }
 

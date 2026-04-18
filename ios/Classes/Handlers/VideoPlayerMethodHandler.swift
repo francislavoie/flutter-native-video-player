@@ -154,9 +154,6 @@ extension VideoPlayerView {
         // --- Set up periodic time observer for Now Playing elapsed time updates ---
         setupPeriodicTimeObserver()
 
-        // (AVPlayerItemDidPlayToEndTime is already registered inside addItemObservers
-        // above — registering it twice fires videoDidEnd twice per end-of-stream.)
-
         // --- Observe status (wait for ready) ---
         var statusObserver: NSKeyValueObservation?
         statusObserver = playerItem.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
@@ -1203,16 +1200,12 @@ extension VideoPlayerView {
 
     /// Returns the active key window across all connected scenes.
     /// Replaces the deprecated `UIApplication.shared.keyWindow`, which returns
-    /// nil or the wrong window on multi-scene iPadOS.
+    /// nil or the wrong window on multi-scene iPadOS. Prefers foreground-active
+    /// scenes, falling back to any scene if none are active.
     static func activeKeyWindow() -> UIWindow? {
-        return UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .filter { $0.activationState == .foregroundActive }
-            .flatMap { $0.windows }
-            .first { $0.isKeyWindow }
-            ?? UIApplication.shared.connectedScenes
-                .compactMap { $0 as? UIWindowScene }
-                .flatMap { $0.windows }
-                .first { $0.isKeyWindow }
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        return scenes.first(where: { $0.activationState == .foregroundActive })?
+            .windows.first(where: { $0.isKeyWindow })
+            ?? scenes.flatMap(\.windows).first(where: { $0.isKeyWindow })
     }
 }

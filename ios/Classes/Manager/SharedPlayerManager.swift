@@ -84,6 +84,15 @@ class SharedPlayerManager: NSObject {
         super.init()
     }
 
+    /// Drops entries whose weak view reference has gone nil.
+    /// Only reassigns when at least one stale entry exists, so the common
+    /// case doesn't allocate a new dictionary. Caller must hold `lock`.
+    private func compactDeadViewsLocked() {
+        if videoPlayerViews.contains(where: { $0.value.view == nil }) {
+            videoPlayerViews = videoPlayerViews.filter { $0.value.view != nil }
+        }
+    }
+
     private func configurePlayerForBackgroundPlayback(_ player: AVPlayer) {
         if #available(iOS 15.0, *) {
             player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
@@ -205,8 +214,7 @@ class SharedPlayerManager: NSObject {
         controllerEventSinks[controllerId] = eventSink
         lock.unlock()
 
-        // Send initial controller state (reads globalRouteDetector, which
-        // itself locks; call outside the lock we just released).
+        // Release the lock before dispatching to main / calling into Flutter.
         sendInitialControllerState(for: controllerId, to: eventSink)
     }
 
@@ -227,8 +235,10 @@ class SharedPlayerManager: NSObject {
         var event = data
         event["event"] = eventName
 
-        DispatchQueue.main.async {
+        if Thread.isMainThread {
             eventSink(event)
+        } else {
+            DispatchQueue.main.async { eventSink(event) }
         }
     }
 
@@ -291,7 +301,6 @@ class SharedPlayerManager: NSObject {
         lock.lock()
         defer { lock.unlock() }
 
-        // First stop all views using this player (recursive lock allows nested call)
         stopAllViewsForController(controllerId)
 
         // Remove player from manager
@@ -410,8 +419,6 @@ class SharedPlayerManager: NSObject {
         )
 
 
-        // Send initial availability state (sendAirPlayAvailabilityEvent takes
-        // the recursive lock itself — safe to call from here).
         if let isAvailable = globalRouteDetector?.multipleRoutesDetected {
             sendAirPlayAvailabilityEvent(isAvailable: isAvailable)
         }
@@ -435,10 +442,10 @@ class SharedPlayerManager: NSObject {
 
     /// Sends AirPlay availability event to Flutter through all registered views
     private func sendAirPlayAvailabilityEvent(isAvailable: Bool) {
+        // Snapshot views under the lock; emit events outside so we don't call
+        // into Flutter while locked.
         lock.lock()
-        // Clean up nil/deallocated views first, then snapshot live views so
-        // we don't call into Flutter while holding the lock.
-        videoPlayerViews = videoPlayerViews.filter { $0.value.view != nil }
+        compactDeadViewsLocked()
         let liveViews = videoPlayerViews.values.compactMap { $0.view }
         lock.unlock()
 
@@ -483,10 +490,8 @@ class SharedPlayerManager: NSObject {
     func findAnotherViewForController(_ controllerId: Int, excluding excludedViewId: Int64) -> VideoPlayerView? {
         lock.lock()
         defer { lock.unlock() }
-        // Clean up nil/deallocated views first
-        videoPlayerViews = videoPlayerViews.filter { $0.value.view != nil }
+        compactDeadViewsLocked()
 
-        // Find another view with the same controller
         for (_, wrapper) in videoPlayerViews {
             if let view = wrapper.view,
                view.controllerId == controllerId,
@@ -503,8 +508,7 @@ class SharedPlayerManager: NSObject {
     func findAllViewsForController(_ controllerId: Int) -> [VideoPlayerView] {
         lock.lock()
         defer { lock.unlock() }
-        // Clean up nil/deallocated views first
-        videoPlayerViews = videoPlayerViews.filter { $0.value.view != nil }
+        compactDeadViewsLocked()
 
         var views: [VideoPlayerView] = []
         for (_, wrapper) in videoPlayerViews {
@@ -608,8 +612,7 @@ class SharedPlayerManager: NSObject {
         lock.lock()
         defer { lock.unlock() }
 
-        // Clean up nil/deallocated views first
-        videoPlayerViews = videoPlayerViews.filter { $0.value.view != nil }
+        compactDeadViewsLocked()
 
         // NOTE: We intentionally do NOT set canStartPictureInPictureAutomaticallyFromInline
         // on any AVPlayerViewController. AVPlayerViewController-managed auto PiP cannot be
@@ -618,8 +621,7 @@ class SharedPlayerManager: NSObject {
         // AVPictureInPictureController when the app enters background.
 
         if enabled {
-            // isManualPiPActive re-acquires the recursive lock — safe here.
-            if isManualPiPActive(controllerId) {
+            if controllersWithManualPiP.contains(controllerId) {
                 return
             }
 

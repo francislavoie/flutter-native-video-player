@@ -70,9 +70,9 @@ extension VideoPlayerView {
             SharedPlayerManager.shared.setManualPiPActive(controllerIdValue, active: false)
         }
 
-        // Emit pipStop once here — not from WillStop — so Dart doesn't receive
-        // the event while isPipCurrentlyActive is still true and doesn't get a
-        // second copy from emitCurrentState below.
+        // Emit pipStop now that isPipCurrentlyActive is false. Emitting earlier
+        // (from WillStop) would race with teardown; the playback-state refresh
+        // below intentionally skips PiP to avoid a duplicate.
         sendPipStopEvent()
 
         var mediaInfo = currentMediaInfo
@@ -97,11 +97,11 @@ extension VideoPlayerView {
         }
 
         if eventSink != nil {
-            emitCurrentState(includePipState: false)
+            emitPlaybackState()
         } else if let controllerIdValue = controllerId {
             let allViews = SharedPlayerManager.shared.findAllViewsForController(controllerIdValue)
             for view in allViews where view.eventSink != nil {
-                view.emitCurrentState(includePipState: false)
+                view.emitPlaybackState()
                 break
             }
         }
@@ -249,13 +249,12 @@ extension VideoPlayerView: AVPictureInPictureControllerDelegate {
         playerViewController.view.isHidden = false
         playerViewController.view.alpha = 1.0
 
-        // Undo state changes from handlePipWillStart: clears isPipCurrentlyActive,
-        // clears the manual-PiP flag (otherwise auto-PiP stays permanently blocked),
-        // and emits pipStop so Dart doesn't think PiP is still active.
+        // A failed start can leave isPipCurrentlyActive set and the manual-PiP
+        // flag stuck on; route through the did-stop path to clean up and
+        // notify Dart. Without this, auto-PiP stays permanently blocked.
         handlePipDidStop()
 
-        // Re-enable auto-PiP tracking — handlePipWillStart may have fired
-        // before the failure and disabled it.
+        // WillStart may have fired and disabled auto-PiP — re-enable it.
         if #available(iOS 14.2, *) {
             if let controllerIdValue = controllerId, canStartPictureInPictureAutomatically {
                 SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
