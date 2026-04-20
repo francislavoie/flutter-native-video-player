@@ -318,17 +318,7 @@ class SharedPlayerManager: NSObject {
         RemoteCommandManager.shared.removeAllTargets()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
 
-        // Deactivate the audio session as soon as the last player is gone,
-        // not just on logout/clearAll. Holding `.playback` active with no
-        // player keeps the iOS audio subsystem powered and blocks low-power
-        // sleep states. `notifyOthersOnDeactivation` lets backgrounded apps
-        // resume their audio.
-        if players.isEmpty {
-            try? AVAudioSession.sharedInstance().setActive(
-                false,
-                options: .notifyOthersOnDeactivation
-            )
-        }
+        deactivateAudioSessionIfIdle()
     }
 
     /// Clears all players (e.g., on logout)
@@ -353,8 +343,19 @@ class SharedPlayerManager: NSObject {
             activePipControllers.removeAll()
         }
 
-        // Deactivate audio session so other apps can resume their audio.
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        deactivateAudioSessionIfIdle()
+    }
+
+    /// Releases `.playback` if no players remain. Holding the session active
+    /// with no player keeps the iOS audio subsystem powered and blocks
+    /// low-power sleep; `.notifyOthersOnDeactivation` lets backgrounded apps
+    /// resume audio.
+    private func deactivateAudioSessionIfIdle() {
+        guard players.isEmpty else { return }
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
     }
 
     // MARK: - AirPlay Route Detection

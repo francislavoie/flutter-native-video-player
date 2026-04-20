@@ -37,21 +37,21 @@ object SharedPlayerManager {
      */
     fun getOrCreatePlayer(context: Context, controllerId: Int): Pair<ExoPlayer, Boolean> {
         val alreadyExisted = players.containsKey(controllerId)
-        val player = players.getOrPut(controllerId) {
-            ExoPlayer.Builder(context)
-                .setTrackSelector(DefaultTrackSelector(context))
-                .setAudioAttributes(AudioAttributes.DEFAULT, false)
-                .build()
-                .apply {
-                    // Partial wake lock during network playback. Released
-                    // automatically when paused/stopped, so it's scoped to
-                    // active playback only — keeps the screen-off live HLS
-                    // case alive without holding the CPU when paused.
-                    setWakeMode(C.WAKE_MODE_NETWORK)
-                }
-        }
+        val player = players.getOrPut(controllerId) { newPlayer(context) }
         return Pair(player, alreadyExisted)
     }
+
+    /// Builds an ExoPlayer wired with the player flags every call site needs:
+    /// default audio focus and a network-scoped wake lock so screen-off live
+    /// HLS keeps playing without holding the CPU during pauses (the wake
+    /// lock auto-releases on pause/stop). Requires the WAKE_LOCK manifest
+    /// permission.
+    fun newPlayer(context: Context): ExoPlayer =
+        ExoPlayer.Builder(context)
+            .setTrackSelector(DefaultTrackSelector(context))
+            .setAudioAttributes(AudioAttributes.DEFAULT, false)
+            .build()
+            .apply { setWakeMode(C.WAKE_MODE_NETWORK) }
 
     /**
      * Gets or creates a notification handler for the given controller ID
