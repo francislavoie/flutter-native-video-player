@@ -601,10 +601,16 @@ class VideoPlayerMethodHandler(
         cleanup()
         player.stop()
 
-        // Remove from shared manager if this is a shared player
         if (controllerId != null) {
+            // Shared manager owns the player — its removePlayer() handles
+            // release(), notification teardown, and service shutdown.
             SharedPlayerManager.removePlayer(context, controllerId)
             Log.d(TAG, "Removed shared player for controller ID: $controllerId")
+        } else {
+            // Non-shared player has no manager to release it. Per Media3
+            // docs, callers must invoke release() so decoders, HTTP cache,
+            // and Surface buffers don't linger past the view's lifetime.
+            player.release()
         }
 
         eventHandler.sendEvent("stopped")

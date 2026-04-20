@@ -15,6 +15,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -133,6 +134,11 @@ class VideoPlayerView(
                 .setTrackSelector(DefaultTrackSelector(context))
                 .setAudioAttributes(AudioAttributes.DEFAULT, false)
                 .build()
+                .apply {
+                    // Same wake-mode reasoning as the shared-player path —
+                    // released automatically on pause/stop.
+                    setWakeMode(C.WAKE_MODE_NETWORK)
+                }
         }
 
         // Set repeat mode for looping

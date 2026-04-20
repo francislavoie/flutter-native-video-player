@@ -14,4 +14,8 @@
     <!-- Required for media playback -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Allows ExoPlayer to hold a partial wake lock during network playback so
+         live streams keep playing when the screen is off. Released automatically
+         when playback pauses or stops. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 </manifest>

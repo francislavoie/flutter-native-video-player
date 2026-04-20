@@ -46,6 +46,10 @@ class VideoPlayerEventHandler(private val isSharedPlayer: Boolean = false) : Eve
 
     override fun onCancel(arguments: Any?) {
         eventSink = null
+        // Drop the initial-state callback too — it captures references that
+        // would otherwise outlive the listener (player, view, observer).
+        initialStateCallback = null
+        hasSentInitialState = false
     }
 
     /**

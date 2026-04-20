@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import com.huddlecommunity.better_native_video_player.VideoPlayerMediaSessionService
@@ -41,6 +42,13 @@ object SharedPlayerManager {
                 .setTrackSelector(DefaultTrackSelector(context))
                 .setAudioAttributes(AudioAttributes.DEFAULT, false)
                 .build()
+                .apply {
+                    // Partial wake lock during network playback. Released
+                    // automatically when paused/stopped, so it's scoped to
+                    // active playback only — keeps the screen-off live HLS
+                    // case alive without holding the CPU when paused.
+                    setWakeMode(C.WAKE_MODE_NETWORK)
+                }
         }
         return Pair(player, alreadyExisted)
     }

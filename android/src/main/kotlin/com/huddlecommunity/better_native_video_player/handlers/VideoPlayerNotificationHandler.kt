@@ -44,7 +44,6 @@ class VideoPlayerNotificationHandler(
 
     private var mediaSession: MediaSession? = null
     private val handler = Handler(Looper.getMainLooper())
-    private var positionUpdateRunnable: Runnable? = null
     private val notificationManager: NotificationManager =
         context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     private var currentArtwork: Bitmap? = null
@@ -212,9 +211,6 @@ class VideoPlayerNotificationHandler(
         mediaInfo?.let { info ->
             updateMediaMetadata(info)
         }
-
-        // Start periodic position updates
-        startPositionUpdates()
     }
 
     /**
@@ -380,31 +376,9 @@ class VideoPlayerNotificationHandler(
     }
 
     /**
-     * Starts periodic position updates (every second)
-     */
-    private fun startPositionUpdates() {
-        positionUpdateRunnable = object : Runnable {
-            override fun run() {
-                // Position is automatically updated by ExoPlayer/MediaSession
-                handler.postDelayed(this, 1000)
-            }
-        }
-        handler.post(positionUpdateRunnable!!)
-    }
-
-    /**
-     * Stops periodic position updates
-     */
-    private fun stopPositionUpdates() {
-        positionUpdateRunnable?.let { handler.removeCallbacks(it) }
-        positionUpdateRunnable = null
-    }
-
-    /**
      * Releases MediaSession and hides notification
      */
     fun release() {
-        stopPositionUpdates()
         player.removeListener(playerListener)
         hideNotification()
 
