@@ -79,9 +79,6 @@ import QuartzCore
     // Track if this is a shared player (to avoid sending duplicate initialization events)
     var isSharedPlayer: Bool = false
 
-    // AirPlay route detector
-    var routeDetector: AVRouteDetector?
-
     // Store desired playback speed
     var desiredPlaybackSpeed: Float = 1.0
 
@@ -303,10 +300,41 @@ import QuartzCore
             object: AVAudioSession.sharedInstance()
         )
 
+        // iOS rarely restarts the media services subsystem (Apple QA1749).
+        // When it does, every AVPlayer / AVAudioSession is orphaned and
+        // playback silently breaks. Subscribe so we can surface the event
+        // to Dart and trigger a hard refresh of the controller.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMediaServicesWereReset),
+            name: AVAudioSession.mediaServicesWereResetNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+
         // AVRouteDetector is opt-in via the `startAirPlayDetection` method
         // channel (enables the shared detector in SharedPlayerManager). Apple
         // warns route detection "significantly increases power consumption",
         // so the per-view detector is no longer created eagerly.
+    }
+
+    /// Per Apple QA1749: when the media server resets, every AVPlayer and
+    /// AVAudioSession is orphaned and silently broken. Surface as an error
+    /// event so the host can drop the player and recreate from scratch.
+    @objc func handleMediaServicesWereReset(notification: Notification) {
+        player?.pause()
+
+        let event: [String: Any] = [
+            "message": "Media services were reset. Refresh to resume playback.",
+            "code": "mediaServicesWereReset",
+        ]
+        sendEvent("error", data: event)
+        if let controllerIdValue = controllerId {
+            SharedPlayerManager.shared.sendControllerEvent(
+                "error",
+                data: event,
+                for: controllerIdValue
+            )
+        }
     }
 
     public func view() -> UIView {
@@ -579,13 +607,8 @@ import QuartzCore
             sendEvent("isInitialized")
         }
 
-        // Send initial AirPlay availability state
-        if #available(iOS 11.0, *) {
-            if let detector = routeDetector {
-                let isAvailable = detector.multipleRoutesDetected
-                sendEvent("airPlayAvailabilityChanged", data: ["isAvailable": isAvailable])
-            }
-        }
+        // Initial AirPlay availability is delivered by SharedPlayerManager's
+        // shared route detector — no per-view fan-out needed.
 
         // Send initial AirPlay connection state
         // Check at system level (audio route) rather than just this player's state
@@ -716,13 +739,6 @@ import QuartzCore
             player?.removeObserver(self, forKeyPath: "timeControlStatus")
             player?.removeObserver(self, forKeyPath: "externalPlaybackActive")
             hasPlayerObservers = false
-        }
-
-        // Remove route detector observer
-        if #available(iOS 11.0, *) {
-            routeDetector?.removeObserver(self, forKeyPath: "multipleRoutesDetected")
-            routeDetector?.isRouteDetectionEnabled = false
-            routeDetector = nil
         }
 
         NotificationCenter.default.removeObserver(self)

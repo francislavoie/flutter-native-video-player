@@ -317,6 +317,18 @@ class SharedPlayerManager: NSObject {
         // leave stale metadata on the lock screen.
         RemoteCommandManager.shared.removeAllTargets()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+
+        // Deactivate the audio session as soon as the last player is gone,
+        // not just on logout/clearAll. Holding `.playback` active with no
+        // player keeps the iOS audio subsystem powered and blocks low-power
+        // sleep states. `notifyOthersOnDeactivation` lets backgrounded apps
+        // resume their audio.
+        if players.isEmpty {
+            try? AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
+        }
     }
 
     /// Clears all players (e.g., on logout)

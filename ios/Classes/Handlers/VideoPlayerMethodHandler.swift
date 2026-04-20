@@ -478,7 +478,10 @@ extension VideoPlayerView {
     private func configureLiveItem() {
         player?.automaticallyWaitsToMinimizeStalling = false
         player?.currentItem?.preferredForwardBufferDuration = 0
-        player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = true
+        // Apple's recommended setting for paused live streams: disabling
+        // background network refresh of seekableTimeRanges saves bandwidth
+        // and CPU during pause states. Live edge will resync on resume.
+        player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         if #available(iOS 13.0, *) {
             player?.currentItem?.automaticallyPreservesTimeOffsetFromLive = true
         }
@@ -992,45 +995,22 @@ extension VideoPlayerView {
         timeObserver = player?.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] _ in
             guard let self = self, let player = self.player, let currentItem = player.currentItem else { return }
 
-            // Update Now Playing info
+            // Update Now Playing info (cheap no-op for live streams since the
+            // helper short-circuits when rate is unchanged; relevant calls for
+            // play/pause/seek/skip already update directly).
             self.updateNowPlayingPlaybackTime()
 
-            // Get current playback position
-            let currentTime = player.currentTime()
-            var positionSeconds = CMTimeGetSeconds(currentTime)
-            var durationSeconds: Double = 0.0
-
-            // For HLS live streams (indefinite duration), use seekableTimeRanges to get duration
-            // Regular VOD content (including VOD HLS) uses the item's duration
+            // Skip the position/duration/timeUpdate computation for live HLS —
+            // there's no scrubbing UI on live and computing seekable ranges +
+            // sending an event over the channel every second is pure overhead.
             if currentItem.duration.isIndefinite {
-                // Live stream - use seekable ranges
-                let seekableRanges = currentItem.seekableTimeRanges
-                if !seekableRanges.isEmpty {
-                    // HLS live stream - calculate duration from seekable range
-                    let firstRange = seekableRanges.first!.timeRangeValue
-                    let lastRange = seekableRanges.last!.timeRangeValue
-
-                    let rangeStart = firstRange.start
-                    let rangeEnd = CMTimeAdd(lastRange.start, lastRange.duration)
-
-                    // Duration is the full seekable window
-                    durationSeconds = CMTimeGetSeconds(CMTimeSubtract(rangeEnd, rangeStart))
-
-                    // Position is relative to the start of the seekable window
-                    positionSeconds = CMTimeGetSeconds(CMTimeSubtract(currentTime, rangeStart))
-
-                    // Ensure position is within valid range
-                    if positionSeconds < 0 {
-                        positionSeconds = 0
-                    } else if positionSeconds > durationSeconds {
-                        positionSeconds = durationSeconds
-                    }
-                }
-            } else {
-                // Regular VOD content (including VOD HLS) - use item duration
-                let duration = currentItem.duration
-                durationSeconds = CMTimeGetSeconds(duration)
+                return
             }
+
+            // VOD path — live HLS already returned above.
+            let currentTime = player.currentTime()
+            let positionSeconds = CMTimeGetSeconds(currentTime)
+            let durationSeconds = CMTimeGetSeconds(currentItem.duration)
 
             // Get buffered position
             var bufferedSeconds = 0.0

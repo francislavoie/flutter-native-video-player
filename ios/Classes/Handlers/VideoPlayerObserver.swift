@@ -256,30 +256,6 @@ extension VideoPlayerView {
                 }
             default: break
             }
-        } else if #available(iOS 11.0, *) {
-            // Handle AVRouteDetector observations
-            if let detector = object as? AVRouteDetector, detector == routeDetector {
-                switch keyPath {
-                case "multipleRoutesDetected":
-                    let isAvailable = routeDetector?.multipleRoutesDetected ?? false
-                    let eventData: [String: Any] = ["isAvailable": isAvailable]
-
-                    // Send through per-view event channel (legacy)
-                    sendEvent("airPlayAvailabilityChanged", data: eventData)
-
-                    // Send through controller-level event channel (persists when views disposed)
-                    if let controllerIdValue = controllerId {
-                        SharedPlayerManager.shared.sendControllerEvent(
-                            "airPlayAvailabilityChanged",
-                            data: eventData,
-                            for: controllerIdValue
-                        )
-                    }
-                default: break
-                }
-            } else {
-                super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
-            }
         } else {
             super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
         }
@@ -401,22 +377,11 @@ extension VideoPlayerView {
     }
 
     // MARK: - AirPlay Route Detection
-
-    /// Sets up AVRouteDetector to monitor AirPlay availability
-    @available(iOS 11.0, *)
-    func setupAirPlayRouteDetector() {
-        routeDetector = AVRouteDetector()
-        routeDetector?.isRouteDetectionEnabled = true
-
-        // Observe changes to multipleRoutesDetected
-        routeDetector?.addObserver(
-            self,
-            forKeyPath: "multipleRoutesDetected",
-            options: [.new, .initial],
-            context: nil
-        )
-
-    }
+    //
+    // Per-view AVRouteDetector was removed — all route detection is owned by
+    // SharedPlayerManager.startAirPlayRouteDetection(). Apple warns the
+    // detector "significantly increases power consumption", so a single
+    // shared instance is preferred over one per view.
 
     /// Gets the name of the currently connected AirPlay device
     func getAirPlayDeviceName() -> String? {
