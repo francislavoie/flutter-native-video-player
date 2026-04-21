@@ -475,10 +475,13 @@ extension VideoPlayerView {
     private func configureLiveItem() {
         player?.automaticallyWaitsToMinimizeStalling = false
         player?.currentItem?.preferredForwardBufferDuration = 0
-        // Apple's recommended setting for paused live streams: disabling
-        // background network refresh of seekableTimeRanges saves bandwidth
-        // and CPU during pause states. Live edge will resync on resume.
-        player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = false
+        // Keep fetching while paused. Commit e81cae9 reverted the false
+        // setting after it caused a pause loop in combination with a small
+        // forward-buffer cap. The buffer cap is no longer aggressive, and
+        // background/PiP is the common "paused" case for this app anyway
+        // — so staying fresh at the live edge on resume is worth the
+        // bandwidth over risking a stall regression.
+        player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = true
         if #available(iOS 13.0, *) {
             player?.currentItem?.automaticallyPreservesTimeOffsetFromLive = true
         }
