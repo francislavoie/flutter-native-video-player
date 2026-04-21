@@ -84,7 +84,9 @@ extension VideoPlayerView {
                         sendEvent("isInitialized")
                     }
                 case .failed:
-                    sendEvent("error", data: ["message": item.error?.localizedDescription ?? "Unknown"])
+                    sendEvent("error", data: errorEventPayload(
+                        message: item.error?.localizedDescription ?? "Unknown"
+                    ))
                 default: break
                 }
             case "playbackBufferEmpty":
@@ -192,11 +194,24 @@ extension VideoPlayerView {
 
                     sendEvent("play")
                 case .paused:
-                    // Only send pause if not waiting to play (buffering)
-                    // and not in PiP (transient pauses from stall recovery
-                    // would block Dart-side recovery mechanisms).
+                    // Not in PiP (transient pauses from stall recovery would
+                    // block Dart-side recovery) and not waiting (those go
+                    // through .waitingToPlayAtSpecifiedRate → "buffering").
                     if player.reasonForWaitingToPlay == nil && !isPipCurrentlyActive {
-                        sendEvent("pause")
+                        // With automaticallyWaitsToMinimizeStalling = false,
+                        // a silent buffer exhaustion lands here rather than in
+                        // .waitingToPlayAtSpecifiedRate. Detect that case by
+                        // inspecting the item's buffer state — otherwise the
+                        // stall is misread as a user pause and recovery never
+                        // engages.
+                        let item = player.currentItem
+                        let stalled = (item?.isPlaybackBufferEmpty == true
+                            || item?.isPlaybackLikelyToKeepUp == false)
+                        if stalled, let item = item, item.status != .failed {
+                            sendEvent("buffering")
+                        } else {
+                            sendEvent("pause")
+                        }
                     }
                 case .waitingToPlayAtSpecifiedRate:
                     // With automaticallyWaitsToMinimizeStalling = false (set for live),
@@ -343,18 +358,32 @@ extension VideoPlayerView {
     }
 
     @objc func playerItemFailedToPlay(notification: Notification) {
-        if let error = notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error {
-            sendEvent("error", data: ["message": error.localizedDescription])
-        } else {
-            sendEvent("error", data: ["message": "Unknown error"])
-        }
+        let message = (notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?
+            .localizedDescription ?? "Unknown error"
+        sendEvent("error", data: errorEventPayload(message: message))
     }
 
     @objc func playerItemNewErrorLogEntry(notification: Notification) {
         guard let item = notification.object as? AVPlayerItem,
               let errorLog = item.errorLog(),
               let lastEvent = errorLog.events.last else { return }
+        lastErrorStatusCode = lastEvent.errorStatusCode
+        lastErrorDomain = lastEvent.errorDomain
+        lastErrorComment = lastEvent.errorComment
+        lastErrorUri = lastEvent.uri
         NSLog("[VideoPlayer] Error log: status=\(lastEvent.errorStatusCode) domain=\(lastEvent.errorDomain) comment=\(lastEvent.errorComment ?? "none") URI=\(lastEvent.uri ?? "none")")
+    }
+
+    /// Builds an "error" event payload with any captured error-log fields
+    /// appended so Dart can distinguish e.g. 403 from 5xx without parsing
+    /// localized strings.
+    func errorEventPayload(message: String) -> [String: Any] {
+        var data: [String: Any] = ["message": message]
+        if lastErrorStatusCode != 0 { data["statusCode"] = lastErrorStatusCode }
+        if let comment = lastErrorComment, !comment.isEmpty { data["comment"] = comment }
+        if let domain = lastErrorDomain, !domain.isEmpty { data["domain"] = domain }
+        if let uri = lastErrorUri, !uri.isEmpty { data["uri"] = uri }
+        return data
     }
 
     @objc func videoDidEnd() {

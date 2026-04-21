@@ -96,6 +96,14 @@ import QuartzCore
     // Prevents duplicate observers when addObservers is called multiple times (e.g., on re-load)
     var hasPlayerObservers: Bool = false
 
+    // Latest AVPlayerItemErrorLogEvent captured by the error-log notification.
+    // Read by the error path so Dart can distinguish 403 (need fresh
+    // token / different CDN edge) from 5xx (transient retry).
+    var lastErrorStatusCode: Int = 0
+    var lastErrorDomain: String?
+    var lastErrorComment: String?
+    var lastErrorUri: String?
+
     // Track whether playback was active before an audio session interruption
     // so we can decide whether to resume after the interruption ends.
     var wasPlayingBeforeInterruption: Bool = false
