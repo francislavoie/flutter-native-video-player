@@ -97,12 +97,16 @@ import QuartzCore
     var hasPlayerObservers: Bool = false
 
     // Latest AVPlayerItemErrorLogEvent captured by the error-log notification.
-    // Read by the error path so Dart can distinguish 403 (need fresh
-    // token / different CDN edge) from 5xx (transient retry).
+    // Only statusCode is consumed on the Dart side today (to distinguish
+    // 4xx "session gone" from 5xx "transient"). Cleared when a new item
+    // reaches .readyToPlay so stale codes don't leak into a fresh session.
     var lastErrorStatusCode: Int = 0
-    var lastErrorDomain: String?
-    var lastErrorComment: String?
-    var lastErrorUri: String?
+
+    // Set after an "error" event is emitted for the current item; cleared on
+    // the next .readyToPlay. Prevents AVFoundation's duplicate error signal
+    // (item.status = .failed AND AVPlayerItemFailedToPlayToEndTime fire for
+    // the same underlying failure) from double-billing Dart's recovery.
+    var errorEmittedForCurrentItem: Bool = false
 
     // Track whether playback was active before an audio session interruption
     // so we can decide whether to resume after the interruption ends.

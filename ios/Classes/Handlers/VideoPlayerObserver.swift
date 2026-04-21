@@ -78,15 +78,17 @@ extension VideoPlayerView {
             case "status":
                 switch item.status {
                 case .readyToPlay:
+                    // Reset per-item error latches so stale fields from a
+                    // previous failure don't leak into a recovered session.
+                    errorEmittedForCurrentItem = false
+                    lastErrorStatusCode = 0
                     // Only send isInitialized for new players, not for shared players
                     // Shared players already sent their state in the init
                     if !isSharedPlayer {
                         sendEvent("isInitialized")
                     }
                 case .failed:
-                    sendEvent("error", data: errorEventPayload(
-                        message: item.error?.localizedDescription ?? "Unknown"
-                    ))
+                    emitErrorOnce(message: item.error?.localizedDescription ?? "Unknown")
                 default: break
                 }
             case "playbackBufferEmpty":
@@ -194,16 +196,12 @@ extension VideoPlayerView {
 
                     sendEvent("play")
                 case .paused:
-                    // Not in PiP (transient pauses from stall recovery would
-                    // block Dart-side recovery) and not waiting (those go
-                    // through .waitingToPlayAtSpecifiedRate → "buffering").
                     if player.reasonForWaitingToPlay == nil && !isPipCurrentlyActive {
                         // With automaticallyWaitsToMinimizeStalling = false,
-                        // a silent buffer exhaustion lands here rather than in
-                        // .waitingToPlayAtSpecifiedRate. Detect that case by
-                        // inspecting the item's buffer state — otherwise the
-                        // stall is misread as a user pause and recovery never
-                        // engages.
+                        // a silent buffer exhaustion drops rate to 0 here
+                        // rather than going through .waitingToPlayAtSpecifiedRate.
+                        // Inspect the item's buffer state so stall recovery
+                        // engages instead of treating it as a user pause.
                         let item = player.currentItem
                         let stalled = (item?.isPlaybackBufferEmpty == true
                             || item?.isPlaybackLikelyToKeepUp == false)
@@ -360,7 +358,7 @@ extension VideoPlayerView {
     @objc func playerItemFailedToPlay(notification: Notification) {
         let message = (notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?
             .localizedDescription ?? "Unknown error"
-        sendEvent("error", data: errorEventPayload(message: message))
+        emitErrorOnce(message: message)
     }
 
     @objc func playerItemNewErrorLogEntry(notification: Notification) {
@@ -368,22 +366,19 @@ extension VideoPlayerView {
               let errorLog = item.errorLog(),
               let lastEvent = errorLog.events.last else { return }
         lastErrorStatusCode = lastEvent.errorStatusCode
-        lastErrorDomain = lastEvent.errorDomain
-        lastErrorComment = lastEvent.errorComment
-        lastErrorUri = lastEvent.uri
         NSLog("[VideoPlayer] Error log: status=\(lastEvent.errorStatusCode) domain=\(lastEvent.errorDomain) comment=\(lastEvent.errorComment ?? "none") URI=\(lastEvent.uri ?? "none")")
     }
 
-    /// Builds an "error" event payload with any captured error-log fields
-    /// appended so Dart can distinguish e.g. 403 from 5xx without parsing
-    /// localized strings.
-    func errorEventPayload(message: String) -> [String: Any] {
+    /// Emits an "error" event at most once per AVPlayerItem. AVFoundation
+    /// fires both `item.status = .failed` and `AVPlayerItemFailedToPlayToEndTime`
+    /// for the same underlying failure; without this guard Dart runs the
+    /// recovery ladder twice and burns a refresh-attempt slot.
+    func emitErrorOnce(message: String) {
+        if errorEmittedForCurrentItem { return }
+        errorEmittedForCurrentItem = true
         var data: [String: Any] = ["message": message]
         if lastErrorStatusCode != 0 { data["statusCode"] = lastErrorStatusCode }
-        if let comment = lastErrorComment, !comment.isEmpty { data["comment"] = comment }
-        if let domain = lastErrorDomain, !domain.isEmpty { data["domain"] = domain }
-        if let uri = lastErrorUri, !uri.isEmpty { data["uri"] = uri }
-        return data
+        sendEvent("error", data: data)
     }
 
     @objc func videoDidEnd() {
