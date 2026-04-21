@@ -6,6 +6,13 @@ extension VideoPlayerView {
     /// Use this when replacing an item mid-session (e.g., stall recovery) where
     /// player-level observers are already registered.
     func addItemObservers(to item: AVPlayerItem) {
+        // Clear per-item error latches so each new item starts clean. Can't
+        // rely solely on the .readyToPlay branch — an item that fails during
+        // manifest load transitions .unknown → .failed directly and would
+        // otherwise inherit the previous item's suppression flag.
+        errorEmittedForCurrentItem = false
+        lastErrorStatusCode = 0
+
         item.addObserver(self, forKeyPath: "status", options: [.new, .old], context: nil)
         item.addObserver(self, forKeyPath: "playbackBufferEmpty", options: [.new], context: nil)
         item.addObserver(self, forKeyPath: "playbackLikelyToKeepUp", options: [.new], context: nil)
@@ -78,10 +85,6 @@ extension VideoPlayerView {
             case "status":
                 switch item.status {
                 case .readyToPlay:
-                    // Reset per-item error latches so stale fields from a
-                    // previous failure don't leak into a recovered session.
-                    errorEmittedForCurrentItem = false
-                    lastErrorStatusCode = 0
                     // Only send isInitialized for new players, not for shared players
                     // Shared players already sent their state in the init
                     if !isSharedPlayer {
@@ -201,10 +204,13 @@ extension VideoPlayerView {
                         // a silent buffer exhaustion drops rate to 0 here
                         // rather than going through .waitingToPlayAtSpecifiedRate.
                         // Inspect the item's buffer state so stall recovery
-                        // engages instead of treating it as a user pause.
+                        // engages — but skip the check when the user just
+                        // hit pause, since a tight live buffer can read as
+                        // "not likely to keep up" even on a deliberate pause.
                         let item = player.currentItem
-                        let stalled = (item?.isPlaybackBufferEmpty == true
-                            || item?.isPlaybackLikelyToKeepUp == false)
+                        let stalled = !userRequestedPause
+                            && (item?.isPlaybackBufferEmpty == true
+                                || item?.isPlaybackLikelyToKeepUp == false)
                         if stalled, let item = item, item.status != .failed {
                             sendEvent("buffering")
                         } else {

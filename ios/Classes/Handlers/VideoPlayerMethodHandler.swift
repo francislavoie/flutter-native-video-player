@@ -18,6 +18,9 @@ extension VideoPlayerView {
             return
         }
 
+        // A fresh stream load always implies playback intent.
+        userRequestedPause = false
+
         let autoPlay = arguments["autoPlay"] as? Bool ?? false
         let headers = arguments["headers"] as? [String: String]
         let mediaInfo = arguments["mediaInfo"] as? [String: Any]
@@ -273,6 +276,7 @@ extension VideoPlayerView {
         // Prepare audio session, Now Playing info, and PiP before playback
         prepareForPlayback()
 
+        userRequestedPause = false
         player?.play()
         // Apply the desired playback speed
         player?.rate = desiredPlaybackSpeed
@@ -282,6 +286,7 @@ extension VideoPlayerView {
     }
 
     func handlePause(result: @escaping FlutterResult) {
+        userRequestedPause = true
         player?.pause()
         updateNowPlayingPlaybackTime()
 

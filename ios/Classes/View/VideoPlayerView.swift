@@ -108,6 +108,12 @@ import QuartzCore
     // the same underlying failure) from double-billing Dart's recovery.
     var errorEmittedForCurrentItem: Bool = false
 
+    // True between handlePause and the next play/load. Lets the .paused KVO
+    // branch distinguish a deliberate user pause from a silent buffer stall
+    // (where buffer state alone would misclassify a user pause near the live
+    // edge, since isPlaybackLikelyToKeepUp can be false with a tight buffer).
+    var userRequestedPause: Bool = false
+
     // Track whether playback was active before an audio session interruption
     // so we can decide whether to resume after the interruption ends.
     var wasPlayingBeforeInterruption: Bool = false
