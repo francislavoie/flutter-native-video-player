@@ -352,15 +352,6 @@ class VideoPlayerNotificationHandler(
     }
 
     /**
-     * Converts Bitmap to ByteArray
-     */
-    private fun bitmapToByteArray(bitmap: Bitmap): ByteArray {
-        val stream = java.io.ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
-        return stream.toByteArray()
-    }
-
-    /**
      * Releases MediaSession and hides notification
      */
     fun release() {

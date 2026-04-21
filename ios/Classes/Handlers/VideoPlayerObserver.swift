@@ -113,10 +113,8 @@ extension VideoPlayerView {
                             seekToLiveEdgeAndPlay()
                         } else if player.rate > 0 && player.timeControlStatus == .playing {
                             sendEvent("play")
-                        } else if player.timeControlStatus == .paused && player.reasonForWaitingToPlay == nil {
-                            if !isPipCurrentlyActive {
-                                sendEvent("pause")
-                            }
+                        } else if player.timeControlStatus == .paused {
+                            emitPausedOrBuffering(for: player)
                         }
                     }
                 }
@@ -199,24 +197,7 @@ extension VideoPlayerView {
 
                     sendEvent("play")
                 case .paused:
-                    if player.reasonForWaitingToPlay == nil && !isPipCurrentlyActive {
-                        // With automaticallyWaitsToMinimizeStalling = false,
-                        // a silent buffer exhaustion drops rate to 0 here
-                        // rather than going through .waitingToPlayAtSpecifiedRate.
-                        // Inspect the item's buffer state so stall recovery
-                        // engages — but skip the check when the user just
-                        // hit pause, since a tight live buffer can read as
-                        // "not likely to keep up" even on a deliberate pause.
-                        let item = player.currentItem
-                        let stalled = !userRequestedPause
-                            && (item?.isPlaybackBufferEmpty == true
-                                || item?.isPlaybackLikelyToKeepUp == false)
-                        if stalled, let item = item, item.status != .failed {
-                            sendEvent("buffering")
-                        } else {
-                            sendEvent("pause")
-                        }
-                    }
+                    emitPausedOrBuffering(for: player)
                 case .waitingToPlayAtSpecifiedRate:
                     // With automaticallyWaitsToMinimizeStalling = false (set for live),
                     // the reason is .evaluatingBufferingRate, never .toMinimizeStalls.
@@ -373,6 +354,27 @@ extension VideoPlayerView {
               let lastEvent = errorLog.events.last else { return }
         lastErrorStatusCode = lastEvent.errorStatusCode
         NSLog("[VideoPlayer] Error log: status=\(lastEvent.errorStatusCode) domain=\(lastEvent.errorDomain) comment=\(lastEvent.errorComment ?? "none") URI=\(lastEvent.uri ?? "none")")
+    }
+
+    /// Decides between `pause` and `buffering` when the player enters
+    /// `.paused` with `reasonForWaitingToPlay == nil`. With
+    /// `automaticallyWaitsToMinimizeStalling = false`, a silent buffer
+    /// exhaustion lands in `.paused` rather than `.waitingToPlayAtSpecifiedRate`
+    /// and would otherwise be indistinguishable from a user pause; inspect
+    /// the item's buffer state so stall recovery engages. Skip the check
+    /// on a deliberate user pause, since a tight live buffer can read as
+    /// "not likely to keep up" even when the user chose to pause.
+    func emitPausedOrBuffering(for player: AVPlayer) {
+        guard player.reasonForWaitingToPlay == nil, !isPipCurrentlyActive else { return }
+        let item = player.currentItem
+        let stalled = !userRequestedPause
+            && (item?.isPlaybackBufferEmpty == true
+                || item?.isPlaybackLikelyToKeepUp == false)
+        if stalled, let item = item, item.status != .failed {
+            sendEvent("buffering")
+        } else {
+            sendEvent("pause")
+        }
     }
 
     /// Emits an "error" event at most once per AVPlayerItem. AVFoundation

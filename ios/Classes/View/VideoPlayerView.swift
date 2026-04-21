@@ -169,15 +169,16 @@ import QuartzCore
                 }
             }
         } else {
-            // Fallback: create new instances if no controller ID provided
+            // Fallback: create new instances if no controller ID provided.
+            // Match SharedPlayerManager.configurePlayerForBackgroundPlayback —
+            // non-shared players are still live HLS and need the same flags.
             playerViewController = AVPlayerViewController()
-            player = AVPlayer()
-
+            let newPlayer = AVPlayer()
             if #available(iOS 15.0, *) {
-                player?.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
+                newPlayer.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
             }
-
-            // Assign player to view controller
+            newPlayer.automaticallyWaitsToMinimizeStalling = false
+            player = newPlayer
             playerViewController.player = player
         }
 
@@ -613,7 +614,7 @@ import QuartzCore
                 if !currentTimeSeconds.isNaN && !durationSeconds.isNaN {
                     let duration = Int(durationSeconds * 1000)
                     let position = Int(currentTimeSeconds * 1000)
-                    sendEvent("timeUpdated", data: ["position": position, "duration": duration])
+                    sendEvent("timeUpdate", data: ["position": position, "duration": duration])
                 }
 
                 // Send current playback state

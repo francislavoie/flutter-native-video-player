@@ -475,12 +475,11 @@ extension VideoPlayerView {
     private func configureLiveItem() {
         player?.automaticallyWaitsToMinimizeStalling = false
         player?.currentItem?.preferredForwardBufferDuration = 0
-        // Keep fetching while paused. Commit e81cae9 reverted the false
-        // setting after it caused a pause loop in combination with a small
-        // forward-buffer cap. The buffer cap is no longer aggressive, and
-        // background/PiP is the common "paused" case for this app anyway
-        // — so staying fresh at the live edge on resume is worth the
-        // bandwidth over risking a stall regression.
+        // Keep fetching while paused. Pausing without refreshing the live
+        // edge has caused a stall loop on resume when combined with a
+        // tight forward-buffer cap — trading a little bandwidth for
+        // robustness is worth it, especially since background/PiP is the
+        // common "paused" state for this app.
         player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = true
         if #available(iOS 13.0, *) {
             player?.currentItem?.automaticallyPreservesTimeOffsetFromLive = true
@@ -655,21 +654,22 @@ extension VideoPlayerView {
         // Clean up remote command ownership (transfer to another view if possible)
         cleanupRemoteCommandOwnership()
 
-        // Remove from shared manager if this is a shared player
+        // Shared players deactivate the audio session via
+        // SharedPlayerManager.removePlayer → deactivateAudioSessionIfIdle.
+        // Non-shared players don't register with the manager, so deactivate
+        // directly here. .notifyOthersOnDeactivation lets interrupted apps
+        // resume their audio.
         if let controllerId = controllerId {
             SharedPlayerManager.shared.removePlayer(for: controllerId)
         } else {
+            try? AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
         }
 
         // Clear local player reference
         player = nil
-
-        // Deactivate the audio session when the last player is disposed so
-        // other apps can resume their audio. .notifyOthersOnDeactivation
-        // sends an interruption-ended hint to interrupted apps.
-        if !SharedPlayerManager.shared.hasActivePlayers {
-            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        }
 
         sendEvent("stopped")
         result(nil)

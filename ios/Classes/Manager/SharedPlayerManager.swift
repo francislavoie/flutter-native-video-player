@@ -299,7 +299,6 @@ class SharedPlayerManager: NSObject {
     /// Removes a player (called when explicitly disposed)
     func removePlayer(for controllerId: Int) {
         lock.lock()
-        defer { lock.unlock() }
 
         stopAllViewsForController(controllerId)
 
@@ -348,13 +347,17 @@ class SharedPlayerManager: NSObject {
         RemoteCommandManager.shared.removeAllTargets()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
 
-        deactivateAudioSessionIfIdle()
+        // Snapshot the decision, release the lock, then deactivate — holding
+        // the lock across AVAudioSession.setActive(false) would block any
+        // waiter behind a potentially slow mediaserverd IPC.
+        let shouldDeactivate = players.isEmpty
+        lock.unlock()
+        if shouldDeactivate { deactivateAudioSession() }
     }
 
     /// Clears all players (e.g., on logout)
     func clearAll() {
         lock.lock()
-        defer { lock.unlock() }
 
         // Dispose all view controllers
         for (_, viewController) in playerViewControllers {
@@ -376,15 +379,18 @@ class SharedPlayerManager: NSObject {
             activePipControllers.removeAll()
         }
 
-        deactivateAudioSessionIfIdle()
+        // clearAll just emptied `players`, so deactivation always applies.
+        lock.unlock()
+        deactivateAudioSession()
     }
 
-    /// Releases `.playback` if no players remain. Holding the session active
+    /// Releases `.playback`. Caller must NOT be holding `lock` —
+    /// `setActive(false)` is a synchronous IPC to mediaserverd that can
+    /// block for tens of ms under contention. Holding `.playback` active
     /// with no player keeps the iOS audio subsystem powered and blocks
-    /// low-power sleep; `.notifyOthersOnDeactivation` lets backgrounded apps
-    /// resume audio.
-    private func deactivateAudioSessionIfIdle() {
-        guard players.isEmpty else { return }
+    /// low-power sleep; `.notifyOthersOnDeactivation` lets backgrounded
+    /// apps resume audio.
+    private func deactivateAudioSession() {
         try? AVAudioSession.sharedInstance().setActive(
             false,
             options: .notifyOthersOnDeactivation
