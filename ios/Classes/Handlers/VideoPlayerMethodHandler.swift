@@ -475,12 +475,13 @@ extension VideoPlayerView {
     private func configureLiveItem() {
         player?.automaticallyWaitsToMinimizeStalling = false
         player?.currentItem?.preferredForwardBufferDuration = 0
-        // Keep fetching while paused. Pausing without refreshing the live
-        // edge has caused a stall loop on resume when combined with a
-        // tight forward-buffer cap — trading a little bandwidth for
-        // robustness is worth it, especially since background/PiP is the
-        // common "paused" state for this app.
-        player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = true
+        // Apple-recommended for live: don't refresh seekable ranges while
+        // paused. Saves bandwidth/battery; the live edge resyncs on resume.
+        // Safe with the current config because the forward-buffer cap is the
+        // system default (~20-60s) and silent-stall detection in the .paused
+        // KVO branch will engage stall recovery if a buffer-empty unpause
+        // ever materializes — so the old pause loop can't recur silently.
+        player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         if #available(iOS 13.0, *) {
             player?.currentItem?.automaticallyPreservesTimeOffsetFromLive = true
         }

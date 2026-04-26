@@ -344,7 +344,6 @@ import QuartzCore
 
         let event: [String: Any] = [
             "message": "Media services were reset. Refresh to resume playback.",
-            "code": "mediaServicesWereReset",
         ]
         sendEvent("error", data: event)
         if let controllerIdValue = controllerId {
