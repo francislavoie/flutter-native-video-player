@@ -241,6 +241,17 @@ class NativeVideoPlayerController {
   /// Flag to track if the controller has been disposed
   bool _isDisposed = false;
 
+  void _completePendingInitializationAsCanceled() {
+    final completer = _initializeCompleter;
+    if (completer != null && !completer.isCompleted) {
+      completer.completeError(
+        StateError('Native video player initialization was canceled.'),
+      );
+    }
+    _initializeCompleter = null;
+    _isInitializing = false;
+  }
+
   /// Lifecycle observer (Android only) — stored so it can be removed on dispose
   _AppLifecycleObserver? _lifecycleObserver;
 
@@ -2223,7 +2234,7 @@ class NativeVideoPlayerController {
 
     // Clear method channel reference (but don't dispose native player)
     _methodChannel = null;
-    _initializeCompleter = null;
+    _completePendingInitializationAsCanceled();
 
     // Clear fullscreen callback (but keep overlay builder)
     _dartFullscreenCloseCallback = null;
@@ -2259,6 +2270,7 @@ class NativeVideoPlayerController {
 
     // Mark as disposed immediately to prevent new events from being added
     _isDisposed = true;
+    _completePendingInitializationAsCanceled();
 
     // Remove lifecycle observer to prevent callbacks after dispose
     if (_lifecycleObserver != null) {

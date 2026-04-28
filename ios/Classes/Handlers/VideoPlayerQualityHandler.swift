@@ -3,6 +3,12 @@ import AVFoundation
 
 class VideoPlayerQualityHandler {
     static func fetchHLSQualities(from url: URL, completion: @escaping ([VideoPlayer.QualityLevel]) -> Void) {
+        func complete(_ qualities: [VideoPlayer.QualityLevel]) {
+            DispatchQueue.main.async {
+                completion(qualities)
+            }
+        }
+
         URLSession.shared.dataTask(with: url) { data, _, error in
             guard let data = data,
                   let playlist = String(data: data, encoding: .utf8)
@@ -10,7 +16,7 @@ class VideoPlayerQualityHandler {
                 if let error = error {
                     NSLog("[VideoPlayer] HLS quality fetch failed: \(error.localizedDescription)")
                 }
-                completion([])
+                complete([])
                 return
             }
 
@@ -20,7 +26,8 @@ class VideoPlayerQualityHandler {
             var lastResolution: String?
             var lastFrameRate: Double?
             
-            for line in lines {
+            for rawLine in lines {
+                let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
                 if line.contains("#EXT-X-STREAM-INF") {
                     // Extract resolution
                     if let resMatch = line.range(of: "RESOLUTION=\\d+x\\d+", options: .regularExpression) {
@@ -38,7 +45,11 @@ class VideoPlayerQualityHandler {
                         let frameRateStr = String(line[frameRateMatch]).replacingOccurrences(of: "FRAME-RATE=", with: "")
                         lastFrameRate = Double(frameRateStr)
                     }
-                } else if line.hasSuffix(".m3u8") {
+                } else if lastBitrate != nil || lastResolution != nil {
+                    guard !line.isEmpty && !line.hasPrefix("#") else {
+                        continue
+                    }
+
                     // Resolve relative URLs against the base URL
                     let qualityUrl: String
                     if line.hasPrefix("http://") || line.hasPrefix("https://") {
@@ -109,7 +120,7 @@ class VideoPlayerQualityHandler {
                 return quality.url == best.url
             }
 
-            completion(deduped)
+            complete(deduped)
         }.resume()
     }
 }

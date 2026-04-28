@@ -236,6 +236,13 @@ extension VideoPlayerView {
         }
 
         // --- Skip forward/backward ---
+        let isLive = player?.currentItem?.duration.isIndefinite ?? true
+        commandCenter.skipForwardCommand.isEnabled = !isLive
+        commandCenter.skipBackwardCommand.isEnabled = !isLive
+        guard !isLive else {
+            return
+        }
+
         commandCenter.skipForwardCommand.preferredIntervals = [15]
         commandCenter.skipBackwardCommand.preferredIntervals = [15]
 

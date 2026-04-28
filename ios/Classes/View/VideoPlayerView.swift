@@ -343,6 +343,7 @@ import QuartzCore
         player?.pause()
 
         let event: [String: Any] = [
+            "code": "mediaServicesWereReset",
             "message": "Media services were reset. Refresh to resume playback.",
         ]
         sendEvent("error", data: event)

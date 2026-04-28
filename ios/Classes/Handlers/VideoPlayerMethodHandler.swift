@@ -61,52 +61,52 @@ extension VideoPlayerView {
         // Fetch qualities (async) only for HLS streams
         if isHls {
             VideoPlayerQualityHandler.fetchHLSQualities(from: url) { [weak self] qualities in
-            guard let self = self else { return }
+                guard let self = self else { return }
 
-            self.qualityLevels = qualities
+                self.qualityLevels = qualities
 
-            // Convert to Flutter format
-            var result: [[String: Any]] = []
+                // Convert to Flutter format
+                var result: [[String: Any]] = []
 
-            // Add auto quality option
-            result.append([
-                "label": "Auto",
-                "url": qualities.first?.url ?? "",
-                "isAuto": true
-            ])
-
-            // Add all available qualities
-            result.append(contentsOf: qualities.map { quality in
-                [
-                    "label": quality.label,
-                    "url": quality.url,
-                    "bitrate": quality.bitrate,
-                    "width": Int(quality.resolution.width),
-                    "height": Int(quality.resolution.height),
-                    "isAuto": false
-                ]
-            })
-
-            // Send qualities to Flutter
-            self.availableQualities = result
-
-            // Store in SharedPlayerManager if this is a shared player
-            if let controllerIdValue = self.controllerId {
-                SharedPlayerManager.shared.setQualities(
-                    for: controllerIdValue,
-                    qualities: result,
-                    qualityLevels: qualities
-                )
-            }
-
-            // Send qualityChange event to notify Flutter that qualities are loaded
-            if !result.isEmpty, let defaultQuality = result.first {
-                self.sendEvent("qualityChange", data: [
-                    "url": defaultQuality["url"] as? String ?? "",
-                    "label": defaultQuality["label"] as? String ?? "Auto",
-                    "isAuto": defaultQuality["isAuto"] as? Bool ?? true
+                // Add auto quality option
+                result.append([
+                    "label": "Auto",
+                    "url": qualities.first?.url ?? "",
+                    "isAuto": true
                 ])
-            }
+
+                // Add all available qualities
+                result.append(contentsOf: qualities.map { quality in
+                    [
+                        "label": quality.label,
+                        "url": quality.url,
+                        "bitrate": quality.bitrate,
+                        "width": Int(quality.resolution.width),
+                        "height": Int(quality.resolution.height),
+                        "isAuto": false
+                    ]
+                })
+
+                // Send qualities to Flutter
+                self.availableQualities = result
+
+                // Store in SharedPlayerManager if this is a shared player
+                if let controllerIdValue = self.controllerId {
+                    SharedPlayerManager.shared.setQualities(
+                        for: controllerIdValue,
+                        qualities: result,
+                        qualityLevels: qualities
+                    )
+                }
+
+                // Send qualityChange event to notify Flutter that qualities are loaded
+                if !result.isEmpty, let defaultQuality = result.first {
+                    self.sendEvent("qualityChange", data: [
+                        "url": defaultQuality["url"] as? String ?? "",
+                        "label": defaultQuality["label"] as? String ?? "Auto",
+                        "isAuto": defaultQuality["isAuto"] as? Bool ?? true
+                    ])
+                }
             }
         } else {
         }
@@ -159,6 +159,14 @@ extension VideoPlayerView {
 
         // --- Observe status (wait for ready) ---
         var statusObserver: NSKeyValueObservation?
+        var resultSent = false
+        func finishLoad(_ value: Any?) {
+            guard !resultSent else { return }
+            resultSent = true
+            statusObserver?.invalidate()
+            statusObserver = nil
+            result(value)
+        }
         statusObserver = playerItem.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
             guard let self = self else {
                 return
@@ -210,14 +218,11 @@ extension VideoPlayerView {
                     // Play event will be sent automatically by timeControlStatus observer
                 }
 
-                // Release observer (avoid leaks)
-                statusObserver?.invalidate()
-
-                result(nil)
+                finishLoad(nil)
 
             case .failed:
                 let error = item.error?.localizedDescription ?? "Unknown error"
-                result(FlutterError(code: "LOAD_ERROR", message: error, details: nil))
+                finishLoad(FlutterError(code: "LOAD_ERROR", message: error, details: nil))
 
             case .unknown:
                 break
