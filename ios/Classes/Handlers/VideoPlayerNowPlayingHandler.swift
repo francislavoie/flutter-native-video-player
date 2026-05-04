@@ -188,10 +188,15 @@ extension VideoPlayerView {
             // We've registered before - check if we're still the owner
             if RemoteCommandManager.shared.isOwner(viewId) {
                 return
-            } else {
-                // We registered before but lost ownership - take it back without clearing
+            } else if RemoteCommandManager.shared.getCurrentOwner() == nil {
+                // Targets may have been intentionally preserved while owner
+                // was cleared for PiP; reclaim ownership without churn.
                 RemoteCommandManager.shared.setOwner(viewId)
                 return
+            } else {
+                // Another view owns the global targets now, so re-register
+                // below to point remote commands at this view again.
+                hasRegisteredRemoteCommands = false
             }
         }
 

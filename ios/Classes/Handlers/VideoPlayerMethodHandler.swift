@@ -104,7 +104,9 @@ extension VideoPlayerView {
                     self.sendEvent("qualityChange", data: [
                         "url": defaultQuality["url"] as? String ?? "",
                         "label": defaultQuality["label"] as? String ?? "Auto",
-                        "isAuto": defaultQuality["isAuto"] as? Bool ?? true
+                        "isAuto": defaultQuality["isAuto"] as? Bool ?? true,
+                        "quality": defaultQuality,
+                        "qualities": result
                     ])
                 }
             }
@@ -393,10 +395,17 @@ extension VideoPlayerView {
             player?.currentItem?.preferredPeakBitRate = 0
             player?.currentItem?.preferredMaximumResolution = .zero
 
-            sendEvent("qualityChange", data: [
+            let qualityPayload = availableQualities.first ?? [
                 "url": "",
                 "label": "Auto",
                 "isAuto": true
+            ]
+            sendEvent("qualityChange", data: [
+                "url": "",
+                "label": "Auto",
+                "isAuto": true,
+                "quality": qualityPayload,
+                "qualities": availableQualities
             ])
         } else {
             let width = qualityInfo["width"] as? Int ?? 0
@@ -447,7 +456,16 @@ extension VideoPlayerView {
             sendEvent("qualityChange", data: [
                 "url": urlString,
                 "label": qualityInfo["label"] as? String ?? "",
-                "isAuto": false
+                "isAuto": false,
+                "quality": [
+                    "url": urlString,
+                    "label": qualityInfo["label"] as? String ?? "",
+                    "bitrate": qualityInfo["bitrate"] as? Int ?? 0,
+                    "width": width,
+                    "height": height,
+                    "isAuto": false
+                ],
+                "qualities": availableQualities
             ])
         }
 
@@ -657,8 +675,9 @@ extension VideoPlayerView {
         drmHandler?.cleanup()
         drmHandler = nil
 
-        // Clean up remote command ownership (transfer to another view if possible)
-        cleanupRemoteCommandOwnership()
+        // Clean up remote command ownership. The whole controller is being
+        // disposed, so transfer only to a different controller.
+        cleanupRemoteCommandOwnership(excludingControllerId: controllerId)
 
         // Shared players deactivate the audio session via
         // SharedPlayerManager.removePlayer → deactivateAudioSessionIfIdle.

@@ -366,7 +366,9 @@ class VideoPlayerMethodHandler(
                     eventHandler.sendEvent("qualityChange", mapOf(
                         "url" to (defaultQuality["url"] ?: ""),
                         "label" to (defaultQuality["label"] ?: "Auto"),
-                        "isAuto" to (defaultQuality["isAuto"] ?: true)
+                        "isAuto" to (defaultQuality["isAuto"] ?: true),
+                        "quality" to defaultQuality,
+                        "qualities" to availableQualities
                     ))
                     Log.d(TAG, "Sent qualityChange event with ${availableQualities.size} available qualities")
                 }
@@ -516,6 +518,14 @@ class VideoPlayerMethodHandler(
         val isAuto = qualityInfo["isAuto"] as? Boolean ?: false
 
         if (isAuto) {
+            val qualityPayload = availableQualities.firstOrNull {
+                it["isAuto"] as? Boolean == true
+            } ?: mapOf(
+                "url" to (masterHlsUrl ?: ""),
+                "label" to "Auto",
+                "isAuto" to true
+            )
+
             // Remove constraints — ExoPlayer uses native ABR
             trackSelector.setParameters(
                 trackSelector.buildUponParameters()
@@ -527,7 +537,9 @@ class VideoPlayerMethodHandler(
             eventHandler.sendEvent("qualityChange", mapOf(
                 "url" to (masterHlsUrl ?: ""),
                 "label" to "Auto",
-                "isAuto" to true
+                "isAuto" to true,
+                "quality" to qualityPayload,
+                "qualities" to availableQualities
             ))
 
             result.success(null)
@@ -555,7 +567,16 @@ class VideoPlayerMethodHandler(
             eventHandler.sendEvent("qualityChange", mapOf(
                 "url" to (url ?: ""),
                 "label" to (label ?: ""),
-                "isAuto" to false
+                "isAuto" to false,
+                "quality" to mapOf(
+                    "url" to (url ?: ""),
+                    "label" to (label ?: ""),
+                    "bitrate" to bitrate,
+                    "width" to width,
+                    "height" to height,
+                    "isAuto" to false
+                ),
+                "qualities" to availableQualities
             ))
 
             result.success(null)

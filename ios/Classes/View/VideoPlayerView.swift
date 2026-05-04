@@ -488,33 +488,34 @@ import QuartzCore
 
     /// Cleans up remote command ownership, attempting to transfer to another view if possible
     /// This is called from both deinit and handleDispose to avoid duplication
-    func cleanupRemoteCommandOwnership() {
+    func cleanupRemoteCommandOwnership(excludingControllerId: Int? = nil) {
         // Only proceed if this view owns the remote commands
         guard RemoteCommandManager.shared.isOwner(viewId) else {
             return
         }
 
 
-        // Try to transfer ownership to another view with the same controller
+        // Try to transfer ownership before clearing process-global controls.
         var ownershipTransferred = false
-        if let controllerIdValue = controllerId,
-           let alternativeView = SharedPlayerManager.shared.findAnotherViewForController(controllerIdValue, excluding: viewId) {
+        if let alternativeView = SharedPlayerManager.shared.findRemoteCommandReplacement(
+            preferredControllerId: controllerId,
+            excluding: viewId,
+            excludingControllerId: excludingControllerId
+        ) {
 
             // Transfer ownership by setting up Now Playing info on the alternative view
             var mediaInfo = alternativeView.currentMediaInfo
 
             // Fallback: Try to get media info from SharedPlayerManager
-            if mediaInfo == nil {
-                mediaInfo = SharedPlayerManager.shared.getMediaInfo(for: controllerIdValue)
+            if mediaInfo == nil, let replacementControllerId = alternativeView.controllerId {
+                mediaInfo = SharedPlayerManager.shared.getMediaInfo(for: replacementControllerId)
                 if mediaInfo != nil {
                     alternativeView.currentMediaInfo = mediaInfo
                 }
             }
 
-            if let mediaInfo = mediaInfo {
-                alternativeView.setupNowPlayingInfo(mediaInfo: mediaInfo)
-                ownershipTransferred = true
-            }
+            alternativeView.setupNowPlayingInfo(mediaInfo: mediaInfo ?? [:])
+            ownershipTransferred = true
         }
 
         // CRITICAL: If no transfer was possible BUT PiP is active, DO NOT clear Now Playing info

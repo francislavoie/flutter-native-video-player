@@ -1348,9 +1348,23 @@ class NativeVideoPlayerController {
 
               // Handle quality change events
               if (controlEvent.state == PlayerControlState.qualityChanged) {
-                if (controlEvent.data != null &&
-                    controlEvent.data!['quality'] != null) {
-                  final qualityMap = controlEvent.data!['quality'] as Map;
+                final data = controlEvent.data;
+                if (data != null && data['qualities'] is List) {
+                  final qualities = (data['qualities'] as List)
+                      .whereType<Map>()
+                      .map(NativeVideoPlayerQuality.fromMap)
+                      .toList();
+                  if (qualities.isNotEmpty) {
+                    _updateState(_state.copyWith(qualities: qualities));
+                  }
+                }
+
+                if (data != null &&
+                    (data['quality'] != null ||
+                        (data['url'] != null && data['label'] != null))) {
+                  final qualityMap = data['quality'] is Map
+                      ? data['quality'] as Map
+                      : data;
                   final quality = NativeVideoPlayerQuality.fromMap(qualityMap);
                   if (!_qualityChangedController.isClosed) {
                     _qualityChangedController.add(quality);

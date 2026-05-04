@@ -282,25 +282,23 @@ class SharedPlayerManager: NSObject {
 
         // Pause and clear the player
         player.pause()
-        player.replaceCurrentItem(with: nil)
 
-        // Remove time observers and clear player reference from all views
+        // Remove all view-owned observers before clearing the shared item.
         for (_, weakView) in videoPlayerViews {
             if let view = weakView.view, view.controllerId == controllerId {
-                if let observer = view.timeObserver {
-                    player.removeTimeObserver(observer)
-                    view.timeObserver = nil
-                }
+                view.removeObserversBeforeManagerClear(from: player)
                 view.player = nil
             }
         }
+
+        player.replaceCurrentItem(with: nil)
     }
 
     /// Removes a player (called when explicitly disposed)
     func removePlayer(for controllerId: Int) {
-        lock.lock()
-
         stopAllViewsForController(controllerId)
+
+        lock.lock()
 
         // Remove player from manager
         players.removeValue(forKey: controllerId)
@@ -340,12 +338,13 @@ class SharedPlayerManager: NSObject {
             activePipControllers.removeValue(forKey: controllerId)
         }
 
-        // Clear Now Playing info and remote commands as safety net.
-        // The view's cleanupRemoteCommandOwnership() should handle this,
-        // but races between view deinit and method channel disposal can
-        // leave stale metadata on the lock screen.
-        RemoteCommandManager.shared.removeAllTargets()
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        // Clear global playback controls only when no shared player remains.
+        // MPRemoteCommandCenter and Now Playing metadata are process-global;
+        // disposing one controller must not remove controls for another.
+        if players.isEmpty {
+            RemoteCommandManager.shared.removeAllTargets()
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        }
 
         // Snapshot the decision, release the lock, then deactivate — holding
         // the lock across AVAudioSession.setActive(false) would block any
@@ -358,6 +357,17 @@ class SharedPlayerManager: NSObject {
     /// Clears all players (e.g., on logout)
     func clearAll() {
         lock.lock()
+
+        for (controllerId, player) in players {
+            player.pause()
+            for (_, weakView) in videoPlayerViews {
+                if let view = weakView.view, view.controllerId == controllerId {
+                    view.removeObserversBeforeManagerClear(from: player)
+                    view.player = nil
+                }
+            }
+            player.replaceCurrentItem(with: nil)
+        }
 
         // Dispose all view controllers
         for (_, viewController) in playerViewControllers {
@@ -378,6 +388,8 @@ class SharedPlayerManager: NSObject {
         if #available(iOS 14.0, *) {
             activePipControllers.removeAll()
         }
+        RemoteCommandManager.shared.removeAllTargets()
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
 
         // clearAll just emptied `players`, so deactivation always applies.
         lock.unlock()
@@ -502,6 +514,42 @@ class SharedPlayerManager: NSObject {
             if let view = wrapper.view,
                view.controllerId == controllerId,
                view.viewId != excludedViewId {
+                return view
+            }
+        }
+
+        return nil
+    }
+
+    /// Finds the best view to inherit process-global remote command ownership.
+    /// Prefer another view for the same controller, then fall back to any
+    /// remaining controller with a loaded player.
+    func findRemoteCommandReplacement(
+        preferredControllerId: Int?,
+        excluding excludedViewId: Int64,
+        excludingControllerId: Int? = nil
+    ) -> VideoPlayerView? {
+        lock.lock()
+        defer { lock.unlock() }
+        compactDeadViewsLocked()
+
+        if let controllerId = preferredControllerId,
+           controllerId != excludingControllerId {
+            for (_, wrapper) in videoPlayerViews {
+                if let view = wrapper.view,
+                   view.controllerId == controllerId,
+                   view.viewId != excludedViewId,
+                   view.player?.currentItem != nil {
+                    return view
+                }
+            }
+        }
+
+        for (_, wrapper) in videoPlayerViews {
+            if let view = wrapper.view,
+               view.viewId != excludedViewId,
+               view.controllerId != excludingControllerId,
+               view.player?.currentItem != nil {
                 return view
             }
         }

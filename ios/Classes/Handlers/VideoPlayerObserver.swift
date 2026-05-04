@@ -342,6 +342,30 @@ extension VideoPlayerView {
         NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: item)
     }
 
+    /// Detaches every observer owned by this view before the shared manager
+    /// clears the shared player or releases its current item.
+    func removeObserversBeforeManagerClear(from player: AVPlayer) {
+        playWhenReadyObserver?.invalidate()
+        playWhenReadyObserver = nil
+
+        if let observer = timeObserver {
+            player.removeTimeObserver(observer)
+            timeObserver = nil
+        }
+
+        if let item = player.currentItem {
+            removeItemObservers(from: item)
+        }
+
+        if hasPlayerObservers {
+            player.removeObserver(self, forKeyPath: "timeControlStatus")
+            player.removeObserver(self, forKeyPath: "externalPlaybackActive")
+            hasPlayerObservers = false
+        }
+
+        NotificationCenter.default.removeObserver(self, name: AVAudioSession.routeChangeNotification, object: nil)
+    }
+
     @objc func playerItemFailedToPlay(notification: Notification) {
         let message = (notification.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? Error)?
             .localizedDescription ?? "Unknown error"
