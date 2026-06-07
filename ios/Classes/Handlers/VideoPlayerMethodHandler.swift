@@ -537,11 +537,14 @@ extension VideoPlayerView {
     }
 
     func handleGetLatencyToLive(result: @escaping FlutterResult) {
-        guard let currentDate = player?.currentItem?.currentDate() else {
+        guard let item = player?.currentItem,
+              let lastRange = item.seekableTimeRanges.last?.timeRangeValue else {
             result(nil)
             return
         }
-        let latency = Date().timeIntervalSince(currentDate)
+        let liveEdge = CMTimeRangeGetEnd(lastRange)
+        let currentTime = player?.currentTime() ?? .zero
+        let latency = CMTimeGetSeconds(CMTimeSubtract(liveEdge, currentTime))
         result(max(0.0, latency))
     }
 
