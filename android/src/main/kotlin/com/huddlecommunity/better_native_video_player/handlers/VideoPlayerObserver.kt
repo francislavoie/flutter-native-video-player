@@ -100,7 +100,10 @@ class VideoPlayerObserver(
     private fun startStallWatchdog() {
         cancelStallWatchdog()
         val runnable = Runnable {
-            if (player.playbackState == Player.STATE_BUFFERING) {
+            // playWhenReady=false means the user paused — recovery would
+            // force-resume against their intent. onPlayWhenReadyChanged
+            // re-arms the watchdog if they resume while still buffering.
+            if (player.playbackState == Player.STATE_BUFFERING && player.playWhenReady) {
                 stallRecoveryAttempt++
 
                 if (stallRecoveryAttempt > MAX_RECOVERY_ATTEMPTS) {
@@ -139,6 +142,16 @@ class VideoPlayerObserver(
     private fun cancelStallWatchdog() {
         stallWatchdogRunnable?.let { handler.removeCallbacks(it) }
         stallWatchdogRunnable = null
+    }
+
+    override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+        if (!playWhenReady) {
+            // User paused — don't let the watchdog force-resume playback.
+            cancelStallWatchdog()
+        } else if (player.playbackState == Player.STATE_BUFFERING) {
+            // Resumed while still buffering — restore stall detection.
+            startStallWatchdog()
+        }
     }
 
     override fun onPlaybackStateChanged(playbackState: Int) {
