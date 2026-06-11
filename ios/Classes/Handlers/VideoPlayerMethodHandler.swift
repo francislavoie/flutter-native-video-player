@@ -142,6 +142,10 @@ extension VideoPlayerView {
             }
         }
         
+        // A previous load may still be waiting on .readyToPlay — resolve its
+        // result before replacing the item, or its Dart future hangs forever.
+        supersedePendingLoad?()
+
         // Remove observers from old item before replacing
         if let oldItem = player?.currentItem {
             removeItemObservers(from: oldItem)
@@ -168,6 +172,17 @@ extension VideoPlayerView {
             statusObserver?.invalidate()
             statusObserver = nil
             result(value)
+        }
+        // Resolved by the next load/dispose if this item never leaves
+        // .unknown. A stale entry after a normal finish is harmless —
+        // finishLoad's resultSent guard makes it a no-op.
+        supersedePendingLoad = { [weak self] in
+            finishLoad(FlutterError(
+                code: "LOAD_SUPERSEDED",
+                message: "A newer load or dispose replaced this request",
+                details: nil
+            ))
+            self?.supersedePendingLoad = nil
         }
         statusObserver = playerItem.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
             guard let self = self else {
@@ -315,8 +330,11 @@ extension VideoPlayerView {
            let milliseconds = args["milliseconds"] as? Int {
             let seconds = Double(milliseconds) / 1000.0
             player?.seek(to: CMTime(seconds: seconds, preferredTimescale: 1000)) { [weak self] _ in
-                self?.sendEvent("seek", data: ["position": milliseconds])
-                self?.updateNowPlayingPlaybackTime()
+                // Seek completions arrive on an internal AVFoundation queue.
+                DispatchQueue.main.async {
+                    self?.sendEvent("seek", data: ["position": milliseconds])
+                    self?.updateNowPlayingPlaybackTime()
+                }
             }
         }
         result(nil)
@@ -532,7 +550,11 @@ extension VideoPlayerView {
         let target = CMTimeSubtract(liveEdge, buffer)
         let seekTarget = CMTimeMaximum(target, lastRange.start)
         player?.seek(to: seekTarget, toleranceBefore: .zero, toleranceAfter: .zero) { _ in
-            result(nil)
+            // FlutterResult must be invoked on the platform (main) thread;
+            // seek completions arrive on an internal AVFoundation queue.
+            DispatchQueue.main.async {
+                result(nil)
+            }
         }
     }
 
@@ -688,6 +710,9 @@ extension VideoPlayerView {
 
     func handleDispose(result: @escaping FlutterResult) {
 
+        // Resolve any in-flight load result so its Dart future doesn't hang.
+        supersedePendingLoad?()
+
         // Remove time observer before releasing the player
         if let timeObserver = timeObserver {
             player?.removeTimeObserver(timeObserver)
@@ -723,6 +748,18 @@ extension VideoPlayerView {
         player = nil
 
         sendEvent("stopped")
+
+        // Platform views on iOS are only released by dealloc, and the plugin
+        // registry holds the last long-lived strong reference. Drop every
+        // view for this controller so deinit cleanup (KVO, notification
+        // observers, PiP teardown) actually runs instead of leaking a view
+        // per stream opened.
+        if let controllerId = controllerId {
+            NativeVideoPlayerPlugin.unregisterViews(forControllerId: controllerId)
+        } else {
+            NativeVideoPlayerPlugin.unregisterView(withId: viewId)
+        }
+
         result(nil)
     }
 

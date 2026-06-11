@@ -12,6 +12,7 @@ extension VideoPlayerView {
         // otherwise inherit the previous item's suppression flag.
         errorEmittedForCurrentItem = false
         lastErrorStatusCode = 0
+        observedItem = item
 
         item.addObserver(self, forKeyPath: "status", options: [.new, .old], context: nil)
         item.addObserver(self, forKeyPath: "playbackBufferEmpty", options: [.new], context: nil)
@@ -296,8 +297,12 @@ extension VideoPlayerView {
             let target = CMTimeSubtract(liveEdge, buffer)
             let seekTarget = CMTimeMaximum(target, lastRange.start)
             player.seek(to: seekTarget, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
-                self?.player?.play()
-                self?.isRecoveringFromStall = false
+                // AVPlayer invokes seek completions on an internal queue —
+                // hop to main before touching the player or view state.
+                DispatchQueue.main.async {
+                    self?.player?.play()
+                    self?.isRecoveringFromStall = false
+                }
             }
         } else if isPipCurrentlyActive {
             // During PiP, don't replace the AVPlayerItem — item replacement
@@ -332,6 +337,12 @@ extension VideoPlayerView {
     /// Removes KVO observers and notification observers from a player item.
     /// Must mirror exactly what `addItemObservers(to:)` registers.
     func removeItemObservers(from item: AVPlayerItem) {
+        // Removing observers this view never added throws NSRangeException —
+        // happens when a sibling view replaced the controller's item and this
+        // view is torn down against `player.currentItem` instead of the item
+        // it actually observed.
+        guard item === observedItem else { return }
+        observedItem = nil
         item.removeObserver(self, forKeyPath: "status")
         item.removeObserver(self, forKeyPath: "playbackBufferEmpty")
         item.removeObserver(self, forKeyPath: "playbackLikelyToKeepUp")
@@ -353,7 +364,9 @@ extension VideoPlayerView {
             timeObserver = nil
         }
 
-        if let item = player.currentItem {
+        // Remove from the item this view actually observed — after a sibling
+        // view replaced the controller's item, currentItem is not it.
+        if let item = observedItem {
             removeItemObservers(from: item)
         }
 
@@ -418,8 +431,11 @@ extension VideoPlayerView {
             // For smooth looping, seek to beginning and continue playing
             player?.seek(to: .zero) { [weak self] finished in
                 if finished {
-                    // Continue playing for seamless loop
-                    self?.player?.play()
+                    // Continue playing for seamless loop (seek completions
+                    // arrive on an internal AVFoundation queue — hop to main)
+                    DispatchQueue.main.async {
+                        self?.player?.play()
+                    }
                 }
             }
             // Don't send completed event when looping to match Android behavior

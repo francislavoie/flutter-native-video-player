@@ -67,6 +67,14 @@ import UIKit
         registeredViews.removeValue(forKey: viewId)
     }
 
+    /// Drops every registered view belonging to a controller. iOS platform
+    /// views are only released by dealloc, and this registry holds the last
+    /// long-lived strong reference — without this, every view (and its
+    /// AVPlayerViewController) leaks and `deinit` cleanup never runs.
+    public static func unregisterViews(forControllerId controllerId: Int) {
+        registeredViews = registeredViews.filter { $0.value.controllerId != controllerId }
+    }
+
     public static func setupControllerEventChannel(for controllerId: Int) {
         // Don't set up if already exists
         guard controllerEventHandlers[controllerId] == nil else {
@@ -87,15 +95,12 @@ import UIKit
     }
 
     public static func teardownControllerEventChannel(for controllerId: Int) {
-        if let handler = controllerEventHandlers[controllerId] {
-            controllerEventHandlers.removeValue(forKey: controllerId)
-        }
+        controllerEventHandlers.removeValue(forKey: controllerId)
     }
 }
 
 class VideoPlayerViewFactory: NSObject, FlutterPlatformViewFactory {
     private var messenger: FlutterBinaryMessenger
-    private var views: [Int64: VideoPlayerView] = [:]
 
     init(messenger: FlutterBinaryMessenger) {
         self.messenger = messenger
@@ -113,7 +118,6 @@ class VideoPlayerViewFactory: NSObject, FlutterPlatformViewFactory {
             arguments: args,
             binaryMessenger: messenger
         )
-        views[viewId] = view
         NativeVideoPlayerPlugin.registerView(view, withId: viewId)
         return view
     }

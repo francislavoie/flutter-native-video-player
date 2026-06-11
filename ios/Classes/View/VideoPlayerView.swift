@@ -118,6 +118,18 @@ import QuartzCore
     // so we can decide whether to resume after the interruption ends.
     var wasPlayingBeforeInterruption: Bool = false
 
+    /// The AVPlayerItem this view currently has item-level KVO/notification
+    /// observers on. With two views sharing a controller, deriving the item
+    /// from `player.currentItem` at removal time targets the wrong item after
+    /// a replacement (load/quality/stall recovery) and crashes with
+    /// NSRangeException — track what was actually observed instead.
+    weak var observedItem: AVPlayerItem?
+
+    /// Resolves the FlutterResult of an in-flight `load` that never reached
+    /// .readyToPlay/.failed (e.g. superseded by a newer load or disposed),
+    /// so the Dart future doesn't hang forever.
+    var supersedePendingLoad: (() -> Void)?
+
     public init(
         frame: CGRect,
         viewIdentifier viewId: Int64,
@@ -759,7 +771,7 @@ import QuartzCore
 
         // Only remove observers, don't dispose the player if it's shared
         // The shared player will be kept alive for reuse
-        if let item = player?.currentItem {
+        if let item = observedItem {
             removeItemObservers(from: item)
         }
 
@@ -897,6 +909,15 @@ import QuartzCore
             // the interruption ends (the system may not always set shouldResume).
             wasPlayingBeforeInterruption = (player?.rate ?? 0) > 0
         case .ended:
+            // A view that wasn't playing when the interruption began has no
+            // claim on the audio session — re-grabbing it here would cut off
+            // whatever app is playing now (e.g. the user's music after a
+            // phone call ends, long after they paused the stream).
+            guard player != nil,
+                  wasPlayingBeforeInterruption || isPipCurrentlyActive else {
+                break
+            }
+
             // Check if we should resume playback
             var shouldResume = false
             if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {

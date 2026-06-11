@@ -219,6 +219,10 @@ extension VideoPlayerView {
             // This is critical after interruptions (e.g., phone calls)
             self.prepareAudioSession()
 
+            // Mirror handlePlay — a stale flag from an earlier in-app pause
+            // would make the next silent stall read as a user pause and
+            // block recovery.
+            self.userRequestedPause = false
             self.player?.play()
             self.sendEvent("play")
             self.updateNowPlayingPlaybackTime()
@@ -234,6 +238,9 @@ extension VideoPlayerView {
                 return .commandFailed
             }
 
+            // Mirror handlePause — without this a lock-screen pause is
+            // classified as a silent stall and recovery force-resumes it.
+            self.userRequestedPause = true
             self.player?.pause()
             self.sendEvent("pause")
             self.updateNowPlayingPlaybackTime()
