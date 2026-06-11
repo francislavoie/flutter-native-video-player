@@ -174,8 +174,7 @@ extension VideoPlayerView {
             result(value)
         }
         // Resolved by the next load/dispose if this item never leaves
-        // .unknown. A stale entry after a normal finish is harmless —
-        // finishLoad's resultSent guard makes it a no-op.
+        // .unknown; cleared on a normal finish below.
         supersedePendingLoad = { [weak self] in
             finishLoad(FlutterError(
                 code: "LOAD_SUPERSEDED",
@@ -236,10 +235,14 @@ extension VideoPlayerView {
                 }
 
                 finishLoad(nil)
+                // Release the supersede closure (and the captures it holds)
+                // now that the result is resolved.
+                self.supersedePendingLoad = nil
 
             case .failed:
                 let error = item.error?.localizedDescription ?? "Unknown error"
                 finishLoad(FlutterError(code: "LOAD_ERROR", message: error, details: nil))
+                self.supersedePendingLoad = nil
 
             case .unknown:
                 break
@@ -564,13 +567,14 @@ extension VideoPlayerView {
             return
         }
 
-        // Distance from the playhead to the newest loaded manifest content.
-        // AVPlayer hugs the manifest edge during live playback, so this is
-        // near zero whenever playback is healthy — it is NOT the latency to
-        // the broadcast. It only serves as a lower bound (the player is
-        // provably at least this far behind even if the device clock lies)
-        // and as a fallback for streams without EXT-X-PROGRAM-DATE-TIME.
-        var edgeDistance = 0.0
+        // Distance from the playhead to the newest loaded manifest content,
+        // nil when no seekable range is loaded yet. AVPlayer hugs the
+        // manifest edge during live playback, so this is near zero whenever
+        // playback is healthy — it is NOT the latency to the broadcast. It
+        // only serves as a lower bound (the player is provably at least this
+        // far behind even if the device clock lies) and as a fallback for
+        // streams without EXT-X-PROGRAM-DATE-TIME.
+        var edgeDistance: Double?
         if let lastRange = item.seekableTimeRanges.last?.timeRangeValue {
             let liveEdge = CMTimeRangeGetEnd(lastRange)
             let currentTime = player?.currentTime() ?? .zero
@@ -582,15 +586,11 @@ extension VideoPlayerView {
         // includes encode/CDN/buffer delay — matching ExoPlayer's
         // currentLiveOffset on Android.
         guard let currentDate = item.currentDate() else {
-            if item.seekableTimeRanges.isEmpty {
-                result(nil)
-            } else {
-                result(edgeDistance)
-            }
+            result(edgeDistance)
             return
         }
         let latency = Date().timeIntervalSince(currentDate)
-        result(max(edgeDistance, latency))
+        result(max(edgeDistance ?? 0, latency))
     }
 
     func handleSetShowNativeControls(call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -749,14 +749,10 @@ extension VideoPlayerView {
 
         sendEvent("stopped")
 
-        // Platform views on iOS are only released by dealloc, and the plugin
-        // registry holds the last long-lived strong reference. Drop every
-        // view for this controller so deinit cleanup (KVO, notification
-        // observers, PiP teardown) actually runs instead of leaking a view
-        // per stream opened.
-        if let controllerId = controllerId {
-            NativeVideoPlayerPlugin.unregisterViews(forControllerId: controllerId)
-        } else {
+        // Shared views are unregistered from the plugin registry by
+        // removePlayer above; a non-shared view has no manager, so drop its
+        // registry reference (the last strong holder) here to let deinit run.
+        if controllerId == nil {
             NativeVideoPlayerPlugin.unregisterView(withId: viewId)
         }
 

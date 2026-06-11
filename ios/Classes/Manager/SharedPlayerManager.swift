@@ -312,6 +312,12 @@ class SharedPlayerManager: NSObject {
         // Remove all views for this controller
         videoPlayerViews = videoPlayerViews.filter { $0.value.view?.controllerId != controllerId }
 
+        // Also drop the plugin registry's strong references — platform views
+        // on iOS are only released by dealloc, and the registry is the last
+        // long-lived strong holder. Owning this here (not in handleDispose)
+        // keeps every future removePlayer caller leak-free.
+        NativeVideoPlayerPlugin.unregisterViews(forControllerId: controllerId)
+
         // Clear primary view tracking
         primaryViewIdForController.removeValue(forKey: controllerId)
 

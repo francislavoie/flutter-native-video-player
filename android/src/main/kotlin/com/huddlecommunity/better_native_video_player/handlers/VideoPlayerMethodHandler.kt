@@ -390,14 +390,7 @@ class VideoPlayerMethodHandler(
 
         // Remove any previous load listener before adding a new one, and
         // resolve its result so the superseded Dart future doesn't hang
-        loadListener?.let { player.removeListener(it) }
-        loadListener = null
-        pendingLoadResult?.error(
-            "LOAD_SUPERSEDED",
-            "A newer load replaced this request",
-            null
-        )
-        pendingLoadResult = null
+        failPendingLoad("A newer load replaced this request")
 
         // Wait for player to be ready
         val listener = object : Player.Listener {
@@ -634,16 +627,21 @@ class VideoPlayerMethodHandler(
      */
     fun cleanup() {
         scope.cancel()
-        loadListener?.let { player.removeListener(it) }
-        loadListener = null
-        pendingLoadResult?.error(
-            "LOAD_SUPERSEDED",
-            "Player disposed before load completed",
-            null
-        )
-        pendingLoadResult = null
+        failPendingLoad("Player disposed before load completed")
         player.removeListener(audioFocusPlaybackListener)
         abandonAudioFocusForPlayback()
+    }
+
+    /**
+     * Removes the in-flight load listener and resolves its result with
+     * LOAD_SUPERSEDED — silently dropping it would leave the Dart `load()`
+     * future hanging forever.
+     */
+    private fun failPendingLoad(message: String) {
+        loadListener?.let { player.removeListener(it) }
+        loadListener = null
+        pendingLoadResult?.error("LOAD_SUPERSEDED", message, null)
+        pendingLoadResult = null
     }
 
     /**

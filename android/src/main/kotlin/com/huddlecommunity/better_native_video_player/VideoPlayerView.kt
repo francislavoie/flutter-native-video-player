@@ -260,12 +260,6 @@ class VideoPlayerView(
             handleFullscreenToggleNative(enterFullscreen)
         }
 
-        // This handler supersedes any handler orphaned by a PiP-time view
-        // disposal — clean the old one up now that focus handling has an owner.
-        if (controllerId != null) {
-            SharedPlayerManager.clearOrphanedMethodHandler(controllerId)
-        }
-
         // PiP is now handled by the floating package on the Dart side
         // Callbacks removed as they're no longer needed
 
@@ -745,9 +739,7 @@ class VideoPlayerView(
         // Remove listeners and stop periodic updates
         player.removeListener(observer)
         observer.release()
-        if (!isInPip) {
-            methodHandler.cleanup()
-        } else if (controllerId != null) {
+        if (isInPip && controllerId != null) {
             // Keep audio-focus handling alive while PiP playback continues
             // without a view, but hand the handler to the manager so it's
             // cleaned up when a successor view appears or the controller is

@@ -96,6 +96,10 @@ object SharedPlayerManager {
      * The callback will be called when another view using the same controller is disposed
      */
     fun registerView(controllerId: Int, viewId: Long, reconnectCallback: () -> Unit) {
+        // A live view (with its own method handler) supersedes any handler
+        // orphaned by a PiP-time view disposal — clean the orphan up here so
+        // every registration path enforces the one-focus-handler invariant.
+        clearOrphanedMethodHandler(controllerId)
         val views = activeViews.getOrPut(controllerId) { ConcurrentHashMap() }
         views[viewId] = reconnectCallback
         Log.d(TAG, "Registered view $viewId for controller $controllerId (total views: ${views.size})")
