@@ -52,6 +52,9 @@ class VideoPlayerMethodHandler(
     // Track whether we were playing before an audio focus loss so we can
     // resume correctly when focus is regained (e.g., after a phone call).
     private var wasPlayingBeforeFocusLoss = false
+    // Volume before a duck so regaining focus restores what Flutter set
+    // (e.g. a muted stream) instead of stomping it to full volume.
+    private var volumeBeforeDuck: Float? = null
 
     private fun isInPipMode(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -71,12 +74,14 @@ class VideoPlayerMethodHandler(
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 if (!isInPipMode()) {
-                    player.volume = 0.3f
+                    if (volumeBeforeDuck == null) volumeBeforeDuck = player.volume
+                    player.volume = player.volume * 0.3f
                     Log.d(TAG, "Audio focus ducking — lowered volume")
                 }
             }
             AudioManager.AUDIOFOCUS_GAIN -> {
-                player.volume = 1.0f
+                volumeBeforeDuck?.let { player.volume = it }
+                volumeBeforeDuck = null
                 if (wasPlayingBeforeFocusLoss) {
                     player.play()
                     wasPlayingBeforeFocusLoss = false
@@ -111,6 +116,11 @@ class VideoPlayerMethodHandler(
 
     // One-shot listener added during handleLoad; stored so it can be cleaned up on dispose
     private var loadListener: Player.Listener? = null
+
+    // The MethodChannel.Result of an in-flight load. Resolved with an error
+    // when a newer load or cleanup supersedes it — silently dropping it
+    // leaves the Dart `load()` future hanging forever.
+    private var pendingLoadResult: MethodChannel.Result? = null
 
     // Callback to handle fullscreen requests from Flutter
     var onFullscreenRequest: ((Boolean) -> Unit)? = null
@@ -378,8 +388,16 @@ class VideoPlayerMethodHandler(
         // NOTE: Media session will be set up when playback starts (in VideoPlayerObserver)
         // This ensures the correct video's metadata is displayed even when switching between videos
 
-        // Remove any previous load listener before adding a new one
+        // Remove any previous load listener before adding a new one, and
+        // resolve its result so the superseded Dart future doesn't hang
         loadListener?.let { player.removeListener(it) }
+        loadListener = null
+        pendingLoadResult?.error(
+            "LOAD_SUPERSEDED",
+            "A newer load replaced this request",
+            null
+        )
+        pendingLoadResult = null
 
         // Wait for player to be ready
         val listener = object : Player.Listener {
@@ -388,6 +406,7 @@ class VideoPlayerMethodHandler(
                     eventHandler.sendEvent("loaded")
                     player.removeListener(this)
                     loadListener = null
+                    pendingLoadResult = null
 
                     // Send AirPlay availability (always false on Android)
                     checkAndSendAirPlayAvailability()
@@ -407,10 +426,12 @@ class VideoPlayerMethodHandler(
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 player.removeListener(this)
                 loadListener = null
+                pendingLoadResult = null
                 result.error("LOAD_ERROR", error.message ?: "Unknown error", null)
             }
         }
         loadListener = listener
+        pendingLoadResult = result
         player.addListener(listener)
     }
 
@@ -615,6 +636,12 @@ class VideoPlayerMethodHandler(
         scope.cancel()
         loadListener?.let { player.removeListener(it) }
         loadListener = null
+        pendingLoadResult?.error(
+            "LOAD_SUPERSEDED",
+            "Player disposed before load completed",
+            null
+        )
+        pendingLoadResult = null
         player.removeListener(audioFocusPlaybackListener)
         abandonAudioFocusForPlayback()
     }

@@ -125,12 +125,13 @@ class VideoPlayerNotificationHandler(
             .setMediaMetadata(metadataBuilder.build())
             .build()
 
-        // Replace the MediaItem without interrupting playback
-        val wasPlaying = player.isPlaying
-        val position = player.currentPosition
+        // Replace the MediaItem without interrupting playback. A metadata-only
+        // replaceMediaItem already preserves position — do NOT seekTo() here:
+        // an explicit seek inside a live window re-anchors the target live
+        // offset to wherever playback currently is, so a player that drifted
+        // (say 12s behind) adopts that as its new target and the speed-based
+        // catch-up never pulls it back toward the configured offset.
         player.replaceMediaItem(player.currentMediaItemIndex, updatedItem)
-        player.seekTo(position)
-        if (wasPlaying) player.play()
 
         Log.d(TAG, "Updated player MediaItem metadata - title: ${mediaInfo["title"]}, subtitle: ${mediaInfo["subtitle"]}")
     }
@@ -337,8 +338,16 @@ class VideoPlayerNotificationHandler(
     private fun loadArtwork(url: String, callback: (Bitmap?) -> Unit) {
         scope.launch {
             try {
-                val connection = URL(url).openConnection()
-                val bitmap = BitmapFactory.decodeStream(connection.getInputStream())
+                // Bounded timeouts — the default is infinite, and scope.cancel()
+                // can't interrupt a blocked read, so a stuck CDN fetch would
+                // park an IO dispatcher thread indefinitely.
+                val connection = URL(url).openConnection().apply {
+                    connectTimeout = 10_000
+                    readTimeout = 10_000
+                }
+                val bitmap = connection.getInputStream().use { stream ->
+                    BitmapFactory.decodeStream(stream)
+                }
                 withContext(Dispatchers.Main) {
                     callback(bitmap)
                 }

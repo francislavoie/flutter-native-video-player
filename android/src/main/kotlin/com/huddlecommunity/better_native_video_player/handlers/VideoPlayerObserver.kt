@@ -273,8 +273,10 @@ class VideoPlayerObserver(
         if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
             // Fell behind the live window — seek to live edge and re-prepare
             Log.w(TAG, "Behind live window, seeking to live edge")
-            hasReportedBuffering = false
             eventHandler.sendEvent("buffering")
+            // Mark reported so the STATE_BUFFERING transition from prepare()
+            // doesn't emit a duplicate buffering event.
+            hasReportedBuffering = true
             player.seekToDefaultPosition()
             player.prepare()
             player.play()

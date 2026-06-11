@@ -8,6 +8,7 @@ import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import com.huddlecommunity.better_native_video_player.VideoPlayerMediaSessionService
+import com.huddlecommunity.better_native_video_player.handlers.VideoPlayerMethodHandler
 import com.huddlecommunity.better_native_video_player.handlers.VideoPlayerNotificationHandler
 import com.huddlecommunity.better_native_video_player.handlers.VideoPlayerEventHandler
 import java.util.concurrent.ConcurrentHashMap
@@ -30,6 +31,29 @@ object SharedPlayerManager {
     // Store available qualities for each controller
     // This ensures qualities persist across view recreations
     private val qualitiesCache = ConcurrentHashMap<Int, List<Map<String, Any>>>()
+
+    // Method handlers whose platform view was disposed during PiP. Their
+    // cleanup() is deferred so audio-focus handling keeps working while
+    // playback continues without a view — but they must be cleaned up when a
+    // successor view takes over or the controller is removed, or each PiP
+    // cycle leaks a live focus listener on the shared player.
+    private val orphanedMethodHandlers = ConcurrentHashMap<Int, VideoPlayerMethodHandler>()
+
+    /**
+     * Defers cleanup of a method handler whose view was disposed during PiP.
+     * Any previously orphaned handler for the controller is cleaned up now.
+     */
+    fun adoptOrphanedMethodHandler(controllerId: Int, handler: VideoPlayerMethodHandler) {
+        orphanedMethodHandlers.put(controllerId, handler)?.cleanup()
+    }
+
+    /**
+     * Cleans up the orphaned handler (if any) once a successor view's
+     * handler is attached to the controller's player.
+     */
+    fun clearOrphanedMethodHandler(controllerId: Int) {
+        orphanedMethodHandlers.remove(controllerId)?.cleanup()
+    }
 
     /**
      * Gets or creates a player for the given controller ID
@@ -139,6 +163,10 @@ object SharedPlayerManager {
     fun removePlayer(context: Context, controllerId: Int) {
         // First stop all views using this player
         stopAllViewsForController(controllerId)
+
+        // Clean up any handler orphaned by a PiP-time view disposal before
+        // the player is released (cleanup removes its player listener).
+        clearOrphanedMethodHandler(controllerId)
 
         // Release notification handler
         notificationHandlers[controllerId]?.release()
