@@ -537,15 +537,38 @@ extension VideoPlayerView {
     }
 
     func handleGetLatencyToLive(result: @escaping FlutterResult) {
-        guard let item = player?.currentItem,
-              let lastRange = item.seekableTimeRanges.last?.timeRangeValue else {
+        guard let item = player?.currentItem else {
             result(nil)
             return
         }
-        let liveEdge = CMTimeRangeGetEnd(lastRange)
-        let currentTime = player?.currentTime() ?? .zero
-        let latency = CMTimeGetSeconds(CMTimeSubtract(liveEdge, currentTime))
-        result(max(0.0, latency))
+
+        // Distance from the playhead to the newest loaded manifest content.
+        // AVPlayer hugs the manifest edge during live playback, so this is
+        // near zero whenever playback is healthy — it is NOT the latency to
+        // the broadcast. It only serves as a lower bound (the player is
+        // provably at least this far behind even if the device clock lies)
+        // and as a fallback for streams without EXT-X-PROGRAM-DATE-TIME.
+        var edgeDistance = 0.0
+        if let lastRange = item.seekableTimeRanges.last?.timeRangeValue {
+            let liveEdge = CMTimeRangeGetEnd(lastRange)
+            let currentTime = player?.currentTime() ?? .zero
+            edgeDistance = max(0.0, CMTimeGetSeconds(CMTimeSubtract(liveEdge, currentTime)))
+        }
+
+        // True latency to the broadcast: wall clock vs the playhead's
+        // EXT-X-PROGRAM-DATE-TIME. Unlike the manifest-edge distance, this
+        // includes encode/CDN/buffer delay — matching ExoPlayer's
+        // currentLiveOffset on Android.
+        guard let currentDate = item.currentDate() else {
+            if item.seekableTimeRanges.isEmpty {
+                result(nil)
+            } else {
+                result(edgeDistance)
+            }
+            return
+        }
+        let latency = Date().timeIntervalSince(currentDate)
+        result(max(edgeDistance, latency))
     }
 
     func handleSetShowNativeControls(call: FlutterMethodCall, result: @escaping FlutterResult) {
