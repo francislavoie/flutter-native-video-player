@@ -160,15 +160,23 @@ class VideoPlayerObserver(
         }
     }
 
+    // Attribute regexes are built per attribute name but reused across the
+    // once-per-second tick — recompiling them for every ad tag is avoidable
+    // churn on the main thread.
+    private val attributeRegexCache = HashMap<String, Regex>()
+
+    private fun cachedRegex(pattern: String): Regex =
+        attributeRegexCache.getOrPut(pattern) { Regex(pattern) }
+
     private fun parseSecondsAttributeMs(tag: String, attribute: String): Long? {
         // Duration attributes may be quoted (X- custom) or bare (standard).
-        val pattern = Regex("$attribute=\"?([0-9.]+)\"?")
+        val pattern = cachedRegex("$attribute=\"?([0-9.]+)\"?")
         val seconds = pattern.find(tag)?.groupValues?.get(1)?.toDoubleOrNull() ?: return null
         return (seconds * 1000).toLong()
     }
 
     private fun parseQuotedAttribute(tag: String, attribute: String): String? =
-        Regex("$attribute=\"([^\"]+)\"").find(tag)?.groupValues?.get(1)
+        cachedRegex("$attribute=\"([^\"]+)\"").find(tag)?.groupValues?.get(1)
 
     fun release() {
         // Stop periodic updates
