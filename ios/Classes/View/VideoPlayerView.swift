@@ -493,8 +493,14 @@ import QuartzCore
                 new
             }
         }
+        // Capture the sink, not self — sendEvent is also called from deinit,
+        // and retaining self in an escaping closure during deinitialization
+        // does not prevent deallocation; the closure would then touch a freed
+        // object. Capturing the sink value keeps the emit safe (and stops
+        // events from reaching a sink attached after this call).
+        let sink = eventSink
         DispatchQueue.main.async {
-            self.eventSink?(event)
+            sink?(event)
         }
     }
 

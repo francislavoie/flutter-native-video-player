@@ -55,6 +55,11 @@ class VideoPlayerMethodHandler(
     // Volume before a duck so regaining focus restores what Flutter set
     // (e.g. a muted stream) instead of stomping it to full volume.
     private var volumeBeforeDuck: Float? = null
+    // Set while a transient focus loss has us paused. The playback listener
+    // must NOT abandon the focus request for this pause — leaving the focus
+    // stack means AUDIOFOCUS_GAIN is never delivered, so playback could
+    // never auto-resume after a call/alarm/assistant interruption.
+    private var pausedByFocusLoss = false
 
     private fun isInPipMode(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -64,12 +69,28 @@ class VideoPlayerMethodHandler(
 
     private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
         when (focusChange) {
-            AudioManager.AUDIOFOCUS_LOSS,
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                // Permanent loss: AUDIOFOCUS_GAIN is never delivered after
+                // this (per Android audio-focus guidance), so don't arm
+                // auto-resume — restarting requires an explicit user action.
+                // The pause flows through the playback listener below, which
+                // abandons the now-dead focus request.
+                wasPlayingBeforeFocusLoss = false
+                pausedByFocusLoss = false
+                if (player.isPlaying && !isInPipMode()) {
+                    player.pause()
+                    Log.d(TAG, "Audio focus lost permanently — paused")
+                }
+            }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 wasPlayingBeforeFocusLoss = player.isPlaying
                 if (player.isPlaying && !isInPipMode()) {
+                    // Keep the focus request alive across this pause so
+                    // AUDIOFOCUS_GAIN can resume playback when the
+                    // interruption (call, alarm, assistant) ends.
+                    pausedByFocusLoss = true
                     player.pause()
-                    Log.d(TAG, "Audio focus lost (transient/permanent) — paused")
+                    Log.d(TAG, "Audio focus lost (transient) — paused")
                 }
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
@@ -82,6 +103,7 @@ class VideoPlayerMethodHandler(
             AudioManager.AUDIOFOCUS_GAIN -> {
                 volumeBeforeDuck?.let { player.volume = it }
                 volumeBeforeDuck = null
+                pausedByFocusLoss = false
                 if (wasPlayingBeforeFocusLoss) {
                     player.play()
                     wasPlayingBeforeFocusLoss = false
@@ -94,11 +116,14 @@ class VideoPlayerMethodHandler(
     private val audioFocusPlaybackListener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (isPlaying) {
+                pausedByFocusLoss = false
                 requestAudioFocusForPlayback()
-            } else if (!player.playWhenReady) {
+            } else if (!player.playWhenReady && !pausedByFocusLoss) {
                 // Only abandon focus on true pause/stop (playWhenReady=false),
                 // not on buffering pauses where isPlaying briefly becomes false
-                // but the player intends to resume once buffer refills.
+                // but the player intends to resume once buffer refills — and
+                // not on a transient-focus-loss pause, where abandoning would
+                // remove us from the focus stack and kill the GAIN resume.
                 abandonAudioFocusForPlayback()
             }
         }
@@ -106,6 +131,13 @@ class VideoPlayerMethodHandler(
 
     init {
         player.addListener(audioFocusPlaybackListener)
+        // A handler attaching to an already-playing shared player (PiP view
+        // recreation) must take over the audio focus that the orphaned
+        // handler's deferred cleanup is about to abandon — playback continues
+        // across the handoff, so no isPlaying transition will re-request it.
+        if (player.isPlaying) {
+            requestAudioFocusForPlayback()
+        }
     }
 
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -283,16 +315,20 @@ class VideoPlayerMethodHandler(
             val licenseUrl = drmConfig["licenseUrl"] as? String
             val drmHeaders = drmConfig["headers"] as? Map<String, String>
 
-            if (licenseUrl != null) {
-                val uuid = when (drmType?.lowercase()) {
-                    "widevine" -> C.WIDEVINE_UUID
-                    "clearkey", "aes-128" -> C.CLEARKEY_UUID
-                    else -> {
-                        Log.w(TAG, "Unknown DRM type: $drmType, defaulting to Widevine")
-                        C.WIDEVINE_UUID
-                    }
+            // HLS AES-128 is not DRM — ExoPlayer decrypts it natively from
+            // the playlist's #EXT-X-KEY, so no DrmConfiguration is needed
+            // (mapping it to ClearKey would break playback).
+            val uuid = when (drmType?.lowercase()) {
+                "widevine" -> C.WIDEVINE_UUID
+                "clearkey" -> C.CLEARKEY_UUID
+                "aes-128" -> null
+                else -> {
+                    Log.w(TAG, "Unknown DRM type: $drmType, defaulting to Widevine")
+                    C.WIDEVINE_UUID
                 }
+            }
 
+            if (uuid != null && licenseUrl != null) {
                 val drmBuilder = MediaItem.DrmConfiguration.Builder(uuid)
                     .setLicenseUri(android.net.Uri.parse(licenseUrl))
 
@@ -302,8 +338,10 @@ class VideoPlayerMethodHandler(
 
                 mediaItemBuilder.setDrmConfiguration(drmBuilder.build())
                 Log.d(TAG, "DRM configured - Type: $drmType, License URL: $licenseUrl")
-            } else {
+            } else if (uuid != null) {
                 Log.w(TAG, "DRM config provided but licenseUrl is missing")
+            } else {
+                Log.d(TAG, "AES-128 HLS — decrypted natively by ExoPlayer, no DrmConfiguration applied")
             }
         }
 
@@ -432,6 +470,9 @@ class VideoPlayerMethodHandler(
      * Starts playback
      */
     private fun handlePlay(result: MethodChannel.Result) {
+        // Manual play takes over from any pending focus-loss auto-resume.
+        pausedByFocusLoss = false
+        wasPlayingBeforeFocusLoss = false
         requestAudioFocusForPlayback()
         player.play()
         result.success(null)
@@ -441,6 +482,11 @@ class VideoPlayerMethodHandler(
      * Pauses playback
      */
     private fun handlePause(result: MethodChannel.Result) {
+        // An explicit pause overrides any pending focus-loss auto-resume —
+        // clear the latches so the abandon below isn't skipped and a later
+        // GAIN can't restart a stream the user chose to stop.
+        pausedByFocusLoss = false
+        wasPlayingBeforeFocusLoss = false
         player.pause()
         abandonAudioFocusForPlayback()
         result.success(null)
@@ -653,8 +699,8 @@ class VideoPlayerMethodHandler(
 
         if (controllerId != null) {
             // Shared manager owns the player — its removePlayer() handles
-            // release(), notification teardown, and service shutdown.
-            SharedPlayerManager.removePlayer(context, controllerId)
+            // release() and notification teardown.
+            SharedPlayerManager.removePlayer(controllerId)
             Log.d(TAG, "Removed shared player for controller ID: $controllerId")
         } else {
             // Non-shared player has no manager to release it. Per Media3

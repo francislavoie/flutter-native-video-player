@@ -1,13 +1,11 @@
 package com.huddlecommunity.better_native_video_player.manager
 
 import android.content.Context
-import android.content.Intent
 import android.util.Log
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
-import com.huddlecommunity.better_native_video_player.VideoPlayerMediaSessionService
 import com.huddlecommunity.better_native_video_player.handlers.VideoPlayerMethodHandler
 import com.huddlecommunity.better_native_video_player.handlers.VideoPlayerNotificationHandler
 import com.huddlecommunity.better_native_video_player.handlers.VideoPlayerEventHandler
@@ -164,7 +162,7 @@ object SharedPlayerManager {
     /**
      * Removes a player (called when explicitly disposed)
      */
-    fun removePlayer(context: Context, controllerId: Int) {
+    fun removePlayer(controllerId: Int) {
         // First stop all views using this player
         stopAllViewsForController(controllerId)
 
@@ -187,17 +185,16 @@ object SharedPlayerManager {
         activeViews.remove(controllerId)
 
         Log.d(TAG, "Removed player for controller $controllerId")
-
-        // If no more players, stop the service
-        if (players.isEmpty()) {
-            stopMediaSessionService(context)
-        }
     }
 
     /**
-     * Clears all players (e.g., on logout)
+     * Clears all players (e.g., on engine detach)
      */
-    fun clearAll(context: Context) {
+    fun clearAll() {
+        // Clean up handlers orphaned by PiP-time view disposals — their
+        // focus listeners reference players that are about to be released.
+        orphanedMethodHandlers.keys.toList().forEach { clearOrphanedMethodHandler(it) }
+
         // Release all notification handlers
         notificationHandlers.values.forEach { it.release() }
         notificationHandlers.clear()
@@ -208,17 +205,5 @@ object SharedPlayerManager {
 
         // Clear qualities cache
         qualitiesCache.clear()
-
-        // Stop the service when clearing all players
-        stopMediaSessionService(context)
-    }
-
-    /**
-     * Stops the MediaSessionService
-     */
-    private fun stopMediaSessionService(context: Context) {
-        VideoPlayerMediaSessionService.setMediaSession(null)
-        val serviceIntent = Intent(context, VideoPlayerMediaSessionService::class.java)
-        context.stopService(serviceIntent)
     }
 }

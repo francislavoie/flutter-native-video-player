@@ -60,7 +60,10 @@ class VideoPlayerObserver(
 
             if (isLiveStream) {
                 duration = timelineWindow.durationMs
-                position = player.currentPosition - timelineWindow.windowStartTimeMs
+                // currentPosition is already relative to the window start —
+                // windowStartTimeMs is a Unix-epoch timestamp and must not
+                // be subtracted from it.
+                position = player.currentPosition
 
                 if (position < 0) position = 0
                 if (position > duration) position = duration
@@ -117,10 +120,15 @@ class VideoPlayerObserver(
                 hasReportedBuffering = true
 
                 if (stallRecoveryAttempt <= 1 || isInPipMode()) {
-                    // Light recovery: seek to live edge, preserving the media source.
+                    // Light recovery: re-prepare, preserving the media source.
                     // Always use light recovery during PiP — stop() is destructive and kills PiP.
-                    Log.w(TAG, "Stall watchdog fired (attempt $stallRecoveryAttempt, pip=${isInPipMode()}) — seeking to default position")
-                    player.seekToDefaultPosition()
+                    // Only live streams get the default-position seek (the live
+                    // edge); for VOD the default position is the window start
+                    // and would yank the viewer back to 0:00.
+                    Log.w(TAG, "Stall watchdog fired (attempt $stallRecoveryAttempt, pip=${isInPipMode()}) — light recovery")
+                    if (player.isCurrentMediaItemLive) {
+                        player.seekToDefaultPosition()
+                    }
                     player.prepare()
                     player.play()
                 } else {

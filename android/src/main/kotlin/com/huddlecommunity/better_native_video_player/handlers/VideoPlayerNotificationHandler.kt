@@ -273,17 +273,18 @@ class VideoPlayerNotificationHandler(
 
         Log.d(TAG, "Building notification - title: $title, subtitle: $artist (from player: ${mediaMetadata != null})")
 
-        // Get notification icon from the app's resources
-        val appInfo = context.applicationInfo
-        val iconResId = appInfo.icon
-
         // Apply the Media3-provided MediaStyle, which takes the session directly —
         // no reflection or token extraction. Required for lock-screen transport
         // controls and system-recognized media category.
+        //
+        // Small icon: status-bar icons must be alpha-only masks; the launcher
+        // icon (applicationInfo.icon) renders as a flat gray blob. Use Media3's
+        // default media glyph — apps can override it by shipping a drawable
+        // named media3_notification_small_icon (the standard Media3 override).
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(artist)
-            .setSmallIcon(iconResId)
+            .setSmallIcon(androidx.media3.session.R.drawable.media3_notification_small_icon)
             .setLargeIcon(currentArtwork)
             .setContentIntent(contentIntent)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)

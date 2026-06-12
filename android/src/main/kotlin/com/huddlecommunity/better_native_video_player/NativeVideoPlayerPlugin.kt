@@ -56,7 +56,7 @@ class NativeVideoPlayerPlugin : FlutterPlugin, ActivityAware {
         // Register platform view factory
         binding.platformViewRegistry.registerViewFactory(
             VIEW_TYPE,
-            VideoPlayerViewFactory(binding.binaryMessenger, binding.applicationContext)
+            VideoPlayerViewFactory(binding.binaryMessenger)
         )
 
         // Register method channel for forwarding calls to specific views
@@ -138,7 +138,7 @@ class NativeVideoPlayerPlugin : FlutterPlugin, ActivityAware {
         Log.d(TAG, "NativeVideoPlayerPlugin detached - cleaning up all players")
         // Clean up all shared players when the Flutter engine is detached
         // This ensures players are properly disposed when the app is closed/terminated
-        SharedPlayerManager.clearAll(binding.applicationContext)
+        SharedPlayerManager.clearAll()
     }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
@@ -167,8 +167,7 @@ class NativeVideoPlayerPlugin : FlutterPlugin, ActivityAware {
  */
 @UnstableApi
 class VideoPlayerViewFactory(
-    private val messenger: BinaryMessenger,
-    private val context: Context
+    private val messenger: BinaryMessenger
 ) : PlatformViewFactory(StandardMessageCodec.INSTANCE) {
 
     companion object {
@@ -181,8 +180,13 @@ class VideoPlayerViewFactory(
         @Suppress("UNCHECKED_CAST")
         val creationParams = args as? Map<String, Any>
 
+        // Use the context Flutter hands us — it's activity-derived and themed,
+        // so PlayerView styling resolves and Activity unwrapping works. Long-
+        // lived objects (shared player, notification handler, method handler)
+        // are created from its applicationContext inside VideoPlayerView so
+        // they never pin an Activity.
         val view = VideoPlayerView(
-            context = this.context,
+            context = context,
             viewId = viewId.toLong(),
             args = creationParams,
             binaryMessenger = messenger

@@ -113,10 +113,13 @@ class VideoPlayerView(
             Log.d(TAG, "📱 Stored media info during init: $title")
         }
 
-        // Get or create shared player
+        // Get or create shared player. Players outlive platform views (and
+        // potentially the Activity), so build them from the application
+        // context — the themed view context is only for view inflation.
+        val appContext = context.applicationContext
         val isSharedPlayer: Boolean
         player = if (controllerId != null) {
-            val (sharedPlayer, alreadyExisted) = SharedPlayerManager.getOrCreatePlayer(context, controllerId)
+            val (sharedPlayer, alreadyExisted) = SharedPlayerManager.getOrCreatePlayer(appContext, controllerId)
             isSharedPlayer = alreadyExisted
             if (alreadyExisted) {
                 Log.d(TAG, "Using existing shared player for controller ID: $controllerId")
@@ -127,7 +130,7 @@ class VideoPlayerView(
         } else {
             Log.d(TAG, "No controller ID provided, creating new player")
             isSharedPlayer = false
-            SharedPlayerManager.newPlayer(context)
+            SharedPlayerManager.newPlayer(appContext)
         }
 
         // Set repeat mode for looping
@@ -234,19 +237,22 @@ class VideoPlayerView(
         // Setup event handler (pass isSharedPlayer flag)
         eventHandler = VideoPlayerEventHandler(isSharedPlayer = isSharedPlayer)
 
-        // Setup notification handler (shared for shared players)
+        // Setup notification handler (shared for shared players). Like the
+        // player, these can outlive the view (shared handlers persist in the
+        // manager; method handlers can be orphan-adopted during PiP), so they
+        // get the application context.
         notificationHandler = if (controllerId != null) {
-            val handler = SharedPlayerManager.getOrCreateNotificationHandler(context, controllerId, player, eventHandler)
+            val handler = SharedPlayerManager.getOrCreateNotificationHandler(appContext, controllerId, player, eventHandler)
             // Update event handler for shared notification handler (in case it's being reused)
             handler.updateEventHandler(eventHandler)
             handler
         } else {
-            VideoPlayerNotificationHandler(context, player, eventHandler)
+            VideoPlayerNotificationHandler(appContext, player, eventHandler)
         }
 
         // Setup method handler with callback to update media info
         methodHandler = VideoPlayerMethodHandler(
-            context = context,
+            context = appContext,
             player = player,
             eventHandler = eventHandler,
             notificationHandler = notificationHandler,
@@ -713,9 +719,12 @@ class VideoPlayerView(
         // Mark as disposed to prevent any further events
         isDisposed = true
 
-        // Exit fullscreen if active
+        // Exit fullscreen if active. Prefer the plugin's ActivityAware
+        // reference — context unwrapping fails when the view was created
+        // from a non-activity context, and the dialog's dismiss listener
+        // would then be the only (indirect) restore path.
         if (isFullScreen) {
-            val activity = getActivity(context)
+            val activity = NativeVideoPlayerPlugin.getActivity() ?: getActivity(context)
             if (activity != null) {
                 exitFullscreenNative(activity)
             }
