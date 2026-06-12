@@ -130,6 +130,16 @@ import QuartzCore
     /// so the Dart future doesn't hang forever.
     var supersedePendingLoad: (() -> Void)?
 
+    /// Collects HLS EXT-X-DATERANGE metadata from the current item so Twitch
+    /// stitched-ad breaks can be detected (see VideoPlayerObserver.swift).
+    var metadataCollector: AVPlayerItemMetadataCollector?
+
+    /// Wall-clock ranges of known stitched-ad breaks on the current item.
+    var adBreakRanges: [(start: Date, end: Date)] = []
+
+    /// Whether the playhead is currently inside a stitched-ad break.
+    var isAdBreakActive: Bool = false
+
     public init(
         frame: CGRect,
         viewIdentifier viewId: Int64,

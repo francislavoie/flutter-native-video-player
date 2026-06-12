@@ -303,6 +303,8 @@ class NativeVideoPlayerController {
       StreamController<NativeVideoPlayerQuality>.broadcast();
   final StreamController<List<NativeVideoPlayerQuality>> _qualitiesController =
       StreamController<List<NativeVideoPlayerQuality>>.broadcast();
+  final StreamController<bool> _adBreakController =
+      StreamController<bool>.broadcast();
 
   /// Updates the internal state
   void _updateState(NativeVideoPlayerState newState) {
@@ -811,6 +813,13 @@ class NativeVideoPlayerController {
   Stream<List<NativeVideoPlayerQuality>> get qualitiesStream =>
       _qualitiesController.stream;
 
+  /// Stream of ad-break state changes (true while a server-stitched ad break
+  /// is playing, e.g. Twitch stitched ads detected via EXT-X-DATERANGE).
+  ///
+  /// Hosts can use this to pause latency-based recovery and timing-sensitive
+  /// features during ads, where program-date-time readings are unreliable.
+  Stream<bool> get adBreakStream => _adBreakController.stream;
+
   /// Parameters passed to native side when creating the platform view
   /// Includes controller ID, autoPlay, PiP settings, media info, and fullscreen state
   Map<String, dynamic> get creationParams => <String, dynamic>{
@@ -1203,6 +1212,15 @@ class NativeVideoPlayerController {
               );
               for (final handler in _airPlayConnectionHandlers) {
                 handler(isConnected);
+              }
+              return;
+            }
+
+            // Ad-break detection (server-stitched ads): dedicated stream.
+            if (eventName == 'adBreakChanged') {
+              final bool isActive = map['isActive'] as bool? ?? false;
+              if (!_adBreakController.isClosed) {
+                _adBreakController.add(isActive);
               }
               return;
             }
@@ -2357,6 +2375,7 @@ class NativeVideoPlayerController {
     await _isFullscreenController.close();
     await _qualityChangedController.close();
     await _qualitiesController.close();
+    await _adBreakController.close();
     await _isOverlayLockedController.close();
 
     // Clear platform view references

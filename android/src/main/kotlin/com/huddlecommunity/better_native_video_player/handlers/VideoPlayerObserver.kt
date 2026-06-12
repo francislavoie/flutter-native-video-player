@@ -1,5 +1,6 @@
 package com.huddlecommunity.better_native_video_player.handlers
 
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -7,11 +8,15 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
 import androidx.media3.common.C
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.hls.HlsManifest
+import java.time.Instant
 
 /**
  * Observes ExoPlayer state changes and reports them via EventHandler
  * Equivalent to iOS VideoPlayerObserver
  */
+@UnstableApi
 class VideoPlayerObserver(
     private val player: Player,
     private val eventHandler: VideoPlayerEventHandler,
@@ -84,12 +89,86 @@ class VideoPlayerObserver(
                 ))
             }
 
+            checkAdBreak()
+
             handler.postDelayed(this, UPDATE_INTERVAL_MS)
         }
     }
 
     // timeUpdateRunnable is started on the first STATE_READY transition
     // to avoid ticking every second before any media is loaded.
+
+    // Whether the playhead is currently inside a Twitch stitched-ad break
+    // (EXT-X-DATERANGE with CLASS="twitch-stitched-ad"). Surfaced to Dart so
+    // the host can suspend latency/stall recovery and chat sync during ads,
+    // where program-date-time readings are unreliable.
+    private var isAdBreakActive = false
+
+    /** Fallback ad-pod length when the daterange has no end/duration yet. */
+    private val defaultAdPodMs = 90_000L
+
+    private fun checkAdBreak() {
+        // Instant.parse needs API 26; skip detection on older devices.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+
+        val mediaPlaylist = (player.currentManifest as? HlsManifest)?.mediaPlaylist
+        val timeline = player.currentTimeline
+        if (mediaPlaylist == null || timeline.isEmpty) {
+            updateAdBreakState(false)
+            return
+        }
+
+        timeline.getWindow(player.currentMediaItemIndex, timelineWindow)
+        val windowStartMs = timelineWindow.windowStartTimeMs
+        if (windowStartMs == C.TIME_UNSET) {
+            updateAdBreakState(false)
+            return
+        }
+        val playheadWallClockMs = windowStartMs + player.currentPosition
+
+        val active = mediaPlaylist.tags.any { tag ->
+            tag.startsWith("#EXT-X-DATERANGE") &&
+                (tag.contains("CLASS=\"twitch-stitched-ad\"") || tag.contains("ID=\"stitched-ad-")) &&
+                isWallClockInDaterange(playheadWallClockMs, tag)
+        }
+        updateAdBreakState(active)
+    }
+
+    private fun updateAdBreakState(active: Boolean) {
+        if (active == isAdBreakActive) return
+        isAdBreakActive = active
+        Log.d(TAG, "Ad break ${if (active) "started" else "ended"}")
+        eventHandler.sendEvent("adBreakChanged", mapOf("isActive" to active))
+    }
+
+    private fun isWallClockInDaterange(wallClockMs: Long, tag: String): Boolean {
+        val startMs = parseIsoAttributeMs(tag, "START-DATE") ?: return false
+        val endMs = parseIsoAttributeMs(tag, "END-DATE")
+            ?: parseSecondsAttributeMs(tag, "X-TV-TWITCH-AD-POD-FILLED-DURATION")?.let { startMs + it }
+            ?: parseSecondsAttributeMs(tag, "DURATION")?.let { startMs + it }
+            ?: parseSecondsAttributeMs(tag, "PLANNED-DURATION")?.let { startMs + it }
+            ?: (startMs + defaultAdPodMs)
+        return wallClockMs in startMs until endMs
+    }
+
+    private fun parseIsoAttributeMs(tag: String, attribute: String): Long? {
+        val value = parseQuotedAttribute(tag, attribute) ?: return null
+        return try {
+            Instant.parse(value).toEpochMilli()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun parseSecondsAttributeMs(tag: String, attribute: String): Long? {
+        // Duration attributes may be quoted (X- custom) or bare (standard).
+        val pattern = Regex("$attribute=\"?([0-9.]+)\"?")
+        val seconds = pattern.find(tag)?.groupValues?.get(1)?.toDoubleOrNull() ?: return null
+        return (seconds * 1000).toLong()
+    }
+
+    private fun parseQuotedAttribute(tag: String, attribute: String): String? =
+        Regex("$attribute=\"([^\"]+)\"").find(tag)?.groupValues?.get(1)
 
     fun release() {
         // Stop periodic updates

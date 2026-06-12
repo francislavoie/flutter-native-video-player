@@ -1025,6 +1025,10 @@ extension VideoPlayerView {
             // play/pause/seek/skip already update directly).
             self.updateNowPlayingPlaybackTime()
 
+            // Ad ranges outlive their pods — time passing must clear the
+            // state, so re-evaluate every tick (before the live early-return).
+            self.updateAdBreakState()
+
             // Skip the position/duration/timeUpdate computation for live HLS —
             // there's no scrubbing UI on live and computing seekable ranges +
             // sending an event over the channel every second is pure overhead.

@@ -14,6 +14,16 @@ extension VideoPlayerView {
         lastErrorStatusCode = 0
         observedItem = item
 
+        // Collect Twitch stitched-ad dateranges for ad-break detection.
+        // A fresh item starts with no known ad ranges; this also emits
+        // adBreakChanged(false) if an ad break was active on the old item.
+        adBreakRanges = []
+        updateAdBreakState()
+        let collector = AVPlayerItemMetadataCollector()
+        collector.setDelegate(self, queue: .main)
+        item.add(collector)
+        metadataCollector = collector
+
         item.addObserver(self, forKeyPath: "status", options: [.new, .old], context: nil)
         item.addObserver(self, forKeyPath: "playbackBufferEmpty", options: [.new], context: nil)
         item.addObserver(self, forKeyPath: "playbackLikelyToKeepUp", options: [.new], context: nil)
@@ -339,6 +349,10 @@ extension VideoPlayerView {
         // it actually observed.
         guard item === observedItem else { return }
         observedItem = nil
+        if let collector = metadataCollector {
+            item.remove(collector)
+            metadataCollector = nil
+        }
         item.removeObserver(self, forKeyPath: "status")
         item.removeObserver(self, forKeyPath: "playbackBufferEmpty")
         item.removeObserver(self, forKeyPath: "playbackLikelyToKeepUp")
@@ -587,5 +601,71 @@ extension VideoPlayerView {
             }
         } else {
         }
+    }
+}
+
+// MARK: - Twitch Stitched-Ad Detection
+
+/// Detects Twitch stitched-ad breaks via HLS EXT-X-DATERANGE metadata
+/// (CLASS="twitch-stitched-ad" / ID="stitched-ad-…"). Surfaced to Dart as
+/// adBreakChanged events so the host can suspend latency/stall recovery and
+/// chat sync during ads, where program-date-time readings are unreliable.
+extension VideoPlayerView: AVPlayerItemMetadataCollectorPushDelegate {
+    public func metadataCollector(
+        _ metadataCollector: AVPlayerItemMetadataCollector,
+        didCollect metadataGroups: [AVDateRangeMetadataGroup],
+        indexesOfNewGroups: IndexSet,
+        indexesOfModifiedGroups: IndexSet
+    ) {
+        /// Fallback ad-pod length when the daterange has no end/duration yet.
+        let defaultAdPodDuration: TimeInterval = 90
+
+        var ranges: [(start: Date, end: Date)] = []
+        for group in metadataGroups {
+            let isStitchedAd = group.classifyingLabel == "twitch-stitched-ad"
+                || group.uniqueID?.hasPrefix("stitched-ad-") == true
+            guard isStitchedAd else { continue }
+
+            let start = group.startDate
+            let end = group.endDate
+                ?? Self.adPodDuration(from: group.items).map { start.addingTimeInterval($0) }
+                ?? start.addingTimeInterval(defaultAdPodDuration)
+            ranges.append((start, end))
+        }
+
+        adBreakRanges = ranges
+        updateAdBreakState()
+    }
+
+    /// Twitch's own pod-length metadata, when present.
+    private static func adPodDuration(from items: [AVMetadataItem]) -> TimeInterval? {
+        for item in items {
+            guard let key = item.key as? String,
+                  key == "X-TV-TWITCH-AD-POD-FILLED-DURATION",
+                  let value = item.stringValue,
+                  let seconds = TimeInterval(value)
+            else { continue }
+            return seconds
+        }
+        return nil
+    }
+
+    /// Re-evaluates whether the playhead is inside a stitched-ad break and
+    /// emits adBreakChanged on transitions. Called by the metadata collector
+    /// and the periodic time observer (ranges outlive their pods, so time
+    /// passing — not just new metadata — must clear the state).
+    func updateAdBreakState() {
+        let active: Bool
+        if adBreakRanges.isEmpty {
+            active = false
+        } else if let now = player?.currentItem?.currentDate() {
+            active = adBreakRanges.contains { now >= $0.start && now < $0.end }
+        } else {
+            active = false
+        }
+
+        guard active \!= isAdBreakActive else { return }
+        isAdBreakActive = active
+        sendEvent("adBreakChanged", data: ["isActive": active])
     }
 }
