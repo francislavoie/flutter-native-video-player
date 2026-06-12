@@ -664,7 +664,7 @@ extension VideoPlayerView: AVPlayerItemMetadataCollectorPushDelegate {
             active = false
         }
 
-        guard active \!= isAdBreakActive else { return }
+        guard active != isAdBreakActive else { return }
         isAdBreakActive = active
         sendEvent("adBreakChanged", data: ["isActive": active])
     }
