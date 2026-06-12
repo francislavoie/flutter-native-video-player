@@ -508,16 +508,6 @@ extension VideoPlayerView {
         // ever materializes — so the old pause loop can't recur silently.
         player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = false
         player?.currentItem?.automaticallyPreservesTimeOffsetFromLive = true
-        // Without an explicit offset, AVPlayer joins ~3x EXT-X-TARGETDURATION
-        // behind the live edge. Twitch declares TARGETDURATION:6 despite 2s
-        // segments, so the default join lands ~18s behind — and the preserve
-        // flag above then maintains that distance forever. 5s keeps ~2.5
-        // segments of headroom while joining (and re-syncing after stalls)
-        // near the edge.
-        player?.currentItem?.configuredTimeOffsetFromLive = CMTime(
-            seconds: 5,
-            preferredTimescale: 600
-        )
     }
 
     func handleConfigureForLivePlayback(call: FlutterMethodCall, result: @escaping FlutterResult) {
