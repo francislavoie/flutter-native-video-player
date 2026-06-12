@@ -154,43 +154,39 @@ extension VideoPlayerView {
 
                     // Enable automatic PiP when playback starts (even from native controls)
                     // This ensures auto PiP works whether the user taps Flutter controls or native controls
-                    if #available(iOS 14.2, *) {
-                        if let controllerIdValue = controllerId {
-                            // Check if there's already a primary view for this controller
-                            let hasPrimaryView = SharedPlayerManager.shared.getPrimaryViewId(for: controllerIdValue) != nil
+                    if let controllerIdValue = controllerId {
+                        // Check if there's already a primary view for this controller
+                        let hasPrimaryView = SharedPlayerManager.shared.getPrimaryViewId(for: controllerIdValue) != nil
 
-                            if !hasPrimaryView {
-                                // No primary view set yet - this means the user started playback via native controls
-                                // Set THIS view as primary
-                                SharedPlayerManager.shared.setPrimaryView(viewId, for: controllerIdValue)
+                        if !hasPrimaryView {
+                            // No primary view set yet - this means the user started playback via native controls
+                            // Set THIS view as primary
+                            SharedPlayerManager.shared.setPrimaryView(viewId, for: controllerIdValue)
+                        }
+
+                        // Check if THIS view is the primary view for this controller
+                        if SharedPlayerManager.shared.isPrimaryView(viewId, for: controllerIdValue) {
+                            // For shared players, check the shared settings instead of instance variable
+                            // This ensures the second view uses the same PiP settings as the first view
+                            let shouldEnableAutoPiP: Bool
+                            if let sharedSettings = SharedPlayerManager.shared.getPipSettings(for: controllerIdValue) {
+                                shouldEnableAutoPiP = sharedSettings.canStartPictureInPictureAutomatically
+                            } else {
+                                shouldEnableAutoPiP = canStartPictureInPictureAutomatically
                             }
 
-                            // Check if THIS view is the primary view for this controller
-                            if SharedPlayerManager.shared.isPrimaryView(viewId, for: controllerIdValue) {
-                                // For shared players, check the shared settings instead of instance variable
-                                // This ensures the second view uses the same PiP settings as the first view
-                                let shouldEnableAutoPiP: Bool
-                                if let sharedSettings = SharedPlayerManager.shared.getPipSettings(for: controllerIdValue) {
-                                    shouldEnableAutoPiP = sharedSettings.canStartPictureInPictureAutomatically
-                                } else {
-                                    shouldEnableAutoPiP = canStartPictureInPictureAutomatically
-                                }
+                            if shouldEnableAutoPiP {
+                                SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
 
-                                if shouldEnableAutoPiP {
-                                    SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
+                                // Eagerly create the PiP controller so it's warmed up
+                                // for background PiP (freshly created controllers may
+                                // not be ready for immediate startPictureInPicture).
+                                ensurePipController()
 
-                                    // Eagerly create the PiP controller so it's warmed up
-                                    // for background PiP (freshly created controllers may
-                                    // not be ready for immediate startPictureInPicture).
-                                    if #available(iOS 14.0, *) {
-                                        ensurePipController()
-                                    }
-
-                                    // Ensure media info is set again after enabling PiP
-                                    // This guarantees media controls work correctly in PiP mode
-                                    if let mediaInfo = currentMediaInfo {
-                                        setupNowPlayingInfo(mediaInfo: mediaInfo)
-                                    }
+                                // Ensure media info is set again after enabling PiP
+                                // This guarantees media controls work correctly in PiP mode
+                                if let mediaInfo = currentMediaInfo {
+                                    setupNowPlayingInfo(mediaInfo: mediaInfo)
                                 }
                             }
                         }

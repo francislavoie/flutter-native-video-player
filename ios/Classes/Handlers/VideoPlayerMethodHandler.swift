@@ -210,15 +210,10 @@ extension VideoPlayerView {
                 // Check PiP support and send availability
                 // Note: Do NOT create custom AVPictureInPictureController here
                 // as it interferes with automatic PiP from AVPlayerViewController
-                if #available(iOS 14.0, *) {
-                    if AVPictureInPictureController.isPictureInPictureSupported() {
-                        // Send availability immediately
-                        self.sendEvent("pipAvailabilityChanged", data: ["isAvailable": true])
-                    } else {
-                        self.sendEvent("pipAvailabilityChanged", data: ["isAvailable": false])
-                    }
+                if AVPictureInPictureController.isPictureInPictureSupported() {
+                    // Send availability immediately
+                    self.sendEvent("pipAvailabilityChanged", data: ["isAvailable": true])
                 } else {
-                    // iOS version too old for PiP
                     self.sendEvent("pipAvailabilityChanged", data: ["isAvailable": false])
                 }
 
@@ -285,15 +280,8 @@ extension VideoPlayerView {
 
         // Enable automatic PiP for this controller and disable for all others
         // Only if automatic PiP was requested in creation params
-        if #available(iOS 14.2, *) {
-            if let controllerIdValue = controllerId {
-                // Only enable if the user requested it in creation params
-                let shouldEnableAutoPiP = canStartPictureInPictureAutomatically
-                if shouldEnableAutoPiP {
-                    SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
-                } else {
-                }
-            }
+        if let controllerIdValue = controllerId, canStartPictureInPictureAutomatically {
+            SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
         }
     }
 
@@ -315,14 +303,9 @@ extension VideoPlayerView {
         player?.pause()
         updateNowPlayingPlaybackTime()
 
-        // DON'T disable automatic PiP on pause anymore
-        // The system will handle when to trigger automatic PiP based on playback state
-        // Disabling it here causes issues when exiting manual PiP (video might pause during transition)
-        // and prevents automatic PiP from working afterward
-        if #available(iOS 14.2, *) {
-            if let controllerIdValue = controllerId {
-            }
-        }
+        // Automatic PiP is intentionally NOT disabled on pause — the system
+        // decides when to trigger it from playback state. Disabling here
+        // caused pauses during manual-PiP exit and blocked later auto-PiP.
 
         // Pause event will be sent automatically by timeControlStatus observer
         result(nil)
@@ -406,7 +389,7 @@ extension VideoPlayerView {
                 player?.replaceCurrentItem(with: item)
                 addItemObservers(to: item)
                 configureLiveItem()
-                if #available(iOS 14.2, *), canStartPictureInPictureAutomatically {
+                if canStartPictureInPictureAutomatically {
                     pipController?.canStartPictureInPictureAutomaticallyFromInline = true
                 }
                 playWhenReady()
@@ -442,9 +425,7 @@ extension VideoPlayerView {
                 addItemObservers(to: item)
                 configureLiveItem()
                 // Disable auto background PiP so audio continues in Dynamic Island
-                if #available(iOS 14.2, *) {
-                    pipController?.canStartPictureInPictureAutomaticallyFromInline = false
-                }
+                pipController?.canStartPictureInPictureAutomaticallyFromInline = false
                 playWhenReady()
             } else {
                 // Video quality: if currently on audio-only (different item),
@@ -459,7 +440,7 @@ extension VideoPlayerView {
                     addItemObservers(to: item)
                     configureLiveItem()
                     // Restore auto background PiP (was disabled for audio-only)
-                    if #available(iOS 14.2, *), canStartPictureInPictureAutomatically {
+                    if canStartPictureInPictureAutomatically {
                         pipController?.canStartPictureInPictureAutomaticallyFromInline = true
                     }
                     replacedItem = true
@@ -526,9 +507,7 @@ extension VideoPlayerView {
         // KVO branch will engage stall recovery if a buffer-empty unpause
         // ever materializes — so the old pause loop can't recur silently.
         player?.currentItem?.canUseNetworkResourcesForLiveStreamingWhilePaused = false
-        if #available(iOS 13.0, *) {
-            player?.currentItem?.automaticallyPreservesTimeOffsetFromLive = true
-        }
+        player?.currentItem?.automaticallyPreservesTimeOffsetFromLive = true
     }
 
     func handleConfigureForLivePlayback(call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -614,23 +593,14 @@ extension VideoPlayerView {
     func handleIsAirPlayAvailable(result: @escaping FlutterResult) {
         // Check if AirPlay is supported on this device
         // AVRoutePickerView requires iOS 11.0+
-        if #available(iOS 11.0, *) {
-            // AirPlay is available on iOS 11.0+
-            // Note: This checks if the device supports AirPlay, not if AirPlay devices
-            // are currently available on the network (which changes dynamically)
-            result(true)
-        } else {
-            // AirPlay requires iOS 11.0+
-            result(false)
-        }
+        // AirPlay is available on iOS 11.0+
+        // Note: This checks if the device supports AirPlay, not if AirPlay devices
+        // are currently available on the network (which changes dynamically)
+        result(true)
     }
 
     func handleShowAirPlayPicker(result: @escaping FlutterResult) {
         // Check iOS version - AVRoutePickerView requires iOS 11.0+
-        guard #available(iOS 11.0, *) else {
-            result(FlutterError(code: "NOT_SUPPORTED", message: "AirPlay picker requires iOS 11.0+", details: nil))
-            return
-        }
 
         // Find the root view controller. UIApplication.keyWindow is deprecated
         // in iOS 13+ and returns nil on multi-scene iPadOS; iterate connected
@@ -691,21 +661,13 @@ extension VideoPlayerView {
     }
 
     func handleStartAirPlayDetection(result: @escaping FlutterResult) {
-        if #available(iOS 11.0, *) {
-            SharedPlayerManager.shared.startAirPlayRouteDetection()
-            result(nil)
-        } else {
-            result(FlutterError(code: "NOT_SUPPORTED", message: "AirPlay detection requires iOS 11.0+", details: nil))
-        }
+        SharedPlayerManager.shared.startAirPlayRouteDetection()
+        result(nil)
     }
 
     func handleStopAirPlayDetection(result: @escaping FlutterResult) {
-        if #available(iOS 11.0, *) {
-            SharedPlayerManager.shared.stopAirPlayRouteDetection()
-            result(nil)
-        } else {
-            result(FlutterError(code: "NOT_SUPPORTED", message: "AirPlay detection requires iOS 11.0+", details: nil))
-        }
+        SharedPlayerManager.shared.stopAirPlayRouteDetection()
+        result(nil)
     }
 
     func handleDispose(result: @escaping FlutterResult) {
@@ -822,115 +784,104 @@ extension VideoPlayerView {
     }
 
     func handleIsPictureInPictureAvailable(result: @escaping FlutterResult) {
-        if #available(iOS 14.0, *) {
-            // Check if PiP is supported on this device
-            let isPipSupported = AVPictureInPictureController.isPictureInPictureSupported()
-            result(isPipSupported)
-        } else {
-            // PiP requires iOS 14.0+
-            result(false)
-        }
+        // Check if PiP is supported on this device
+        let isPipSupported = AVPictureInPictureController.isPictureInPictureSupported()
+        result(isPipSupported)
     }
 
     func handleEnterPictureInPicture(result: @escaping FlutterResult) {
-        if #available(iOS 14.0, *) {
-            // Check if video is loaded and ready
-            guard let player = player, let currentItem = player.currentItem else {
-                result(FlutterError(code: "NO_VIDEO", message: "No video loaded.", details: nil))
+        // Check if video is loaded and ready
+        guard let player = player, let currentItem = player.currentItem else {
+            result(FlutterError(code: "NO_VIDEO", message: "No video loaded.", details: nil))
+            return
+        }
+        
+        guard currentItem.status == .readyToPlay else {
+            result(FlutterError(code: "NOT_READY", message: "Video is not ready to play.", details: nil))
+            return
+        }
+        
+        // Check if PiP is supported on device
+        guard AVPictureInPictureController.isPictureInPictureSupported() else {
+            result(FlutterError(code: "NOT_SUPPORTED", message: "Picture-in-Picture is not supported on this device.", details: nil))
+            return
+        }
+
+
+        // Mark manual PiP as active for this controller
+        if let controllerIdValue = controllerId {
+            SharedPlayerManager.shared.setManualPiPActive(controllerIdValue, active: true)
+        }
+
+        // CRITICAL: Temporarily disable AVPlayerViewController's PiP while using custom controller
+        // This prevents the AVPlayerViewController from starting its own PiP simultaneously
+        // NOTE: We do this AFTER the checks, so it doesn't interfere with the next manual PiP attempt
+        playerViewController.allowsPictureInPicturePlayback = false
+
+        // Get or create the PiP controller for this player layer
+        // Reuse existing controller if available, or create new one
+        if pipController == nil {
+            if let playerLayer = findPlayerLayer() {
+                pipController = try? AVPictureInPictureController(playerLayer: playerLayer)
+                pipController?.delegate = self
+            } else {
+                if let controllerIdValue = controllerId {
+                    SharedPlayerManager.shared.setManualPiPActive(controllerIdValue, active: false)
+                }
+                result(FlutterError(code: "NO_LAYER", message: "Could not find player layer", details: nil))
                 return
             }
-            
-            guard currentItem.status == .readyToPlay else {
-                result(FlutterError(code: "NOT_READY", message: "Video is not ready to play.", details: nil))
-                return
-            }
-            
-            // Check if PiP is supported on device
-            guard AVPictureInPictureController.isPictureInPictureSupported() else {
-                result(FlutterError(code: "NOT_SUPPORTED", message: "Picture-in-Picture is not supported on this device.", details: nil))
-                return
-            }
+        }
 
+        // Start PiP using the controller
+        // Wait for the controller to be ready with retries
+        var attempt = 0
+        let maxAttempts = 3
+        var resultSent = false
 
-            // Mark manual PiP as active for this controller
-            if let controllerIdValue = controllerId {
-                SharedPlayerManager.shared.setManualPiPActive(controllerIdValue, active: true)
-            }
+        func sendResult(_ value: Any?) {
+            guard !resultSent else { return }
+            resultSent = true
+            result(value)
+        }
 
-            // CRITICAL: Temporarily disable AVPlayerViewController's PiP while using custom controller
-            // This prevents the AVPlayerViewController from starting its own PiP simultaneously
-            // NOTE: We do this AFTER the checks, so it doesn't interfere with the next manual PiP attempt
-            playerViewController.allowsPictureInPicturePlayback = false
+        func tryStartPip() {
+            attempt += 1
 
-            // Get or create the PiP controller for this player layer
-            // Reuse existing controller if available, or create new one
-            if pipController == nil {
-                if let playerLayer = findPlayerLayer() {
-                    pipController = try? AVPictureInPictureController(playerLayer: playerLayer)
-                    pipController?.delegate = self
+            if let pipController = pipController {
+
+                if pipController.isPictureInPicturePossible {
+                    pipController.startPictureInPicture()
+                    sendResult(true)
+                } else if attempt < maxAttempts {
+                    // Retry after a short delay
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                        guard self != nil else { return }
+                        tryStartPip()
+                    }
                 } else {
                     if let controllerIdValue = controllerId {
                         SharedPlayerManager.shared.setManualPiPActive(controllerIdValue, active: false)
-                    }
-                    result(FlutterError(code: "NO_LAYER", message: "Could not find player layer", details: nil))
-                    return
-                }
-            }
-
-            // Start PiP using the controller
-            // Wait for the controller to be ready with retries
-            var attempt = 0
-            let maxAttempts = 3
-            var resultSent = false
-
-            func sendResult(_ value: Any?) {
-                guard !resultSent else { return }
-                resultSent = true
-                result(value)
-            }
-
-            func tryStartPip() {
-                attempt += 1
-
-                if let pipController = pipController {
-
-                    if pipController.isPictureInPicturePossible {
-                        pipController.startPictureInPicture()
-                        sendResult(true)
-                    } else if attempt < maxAttempts {
-                        // Retry after a short delay
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                            guard self != nil else { return }
-                            tryStartPip()
+                        // Re-enable AVPlayerViewController PiP since we're not starting
+                        playerViewController.allowsPictureInPicturePlayback = false
+                        if canStartPictureInPictureAutomatically {
+                            SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
                         }
-                    } else {
-                        if let controllerIdValue = controllerId {
-                            SharedPlayerManager.shared.setManualPiPActive(controllerIdValue, active: false)
-                            // Re-enable AVPlayerViewController PiP since we're not starting
-                            playerViewController.allowsPictureInPicturePlayback = false
-                            if #available(iOS 14.2, *) {
-                                if canStartPictureInPictureAutomatically {
-                                    SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
-                                }
-                            }
-                        }
-                        sendResult(FlutterError(code: "PIP_NOT_POSSIBLE", message: "Picture-in-Picture is not possible at this time. Make sure the video is playing and loaded.", details: nil))
                     }
-                } else {
-                    sendResult(FlutterError(code: "NO_CONTROLLER", message: "PiP controller is not available", details: nil))
+                    sendResult(FlutterError(code: "PIP_NOT_POSSIBLE", message: "Picture-in-Picture is not possible at this time. Make sure the video is playing and loaded.", details: nil))
                 }
+            } else {
+                sendResult(FlutterError(code: "NO_CONTROLLER", message: "PiP controller is not available", details: nil))
             }
+        }
 
-            // Start the first attempt after a brief delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                guard self != nil else {
-                    sendResult(FlutterError(code: "DISPOSED", message: "View was disposed", details: nil))
-                    return
-                }
-                tryStartPip()
+        // Start the first attempt after a brief delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard self != nil else {
+                sendResult(FlutterError(code: "DISPOSED", message: "View was disposed", details: nil))
+                return
             }
-        } else {
-            result(FlutterError(code: "NOT_SUPPORTED", message: "PiP requires iOS 14.0+", details: nil))
+            tryStartPip()
         }
     }
     
@@ -971,100 +922,88 @@ extension VideoPlayerView {
     
 
     func handleExitPictureInPicture(result: @escaping FlutterResult) {
-        if #available(iOS 14.0, *) {
-            // Call stopPictureInPicture() unconditionally — it is a safe no-op
-            // when PiP is not active, and isPictureInPictureActive can desync
-            // from visual state on iOS.
+        // Call stopPictureInPicture() unconditionally — it is a safe no-op
+        // when PiP is not active, and isPictureInPictureActive can desync
+        // from visual state on iOS.
 
-            // First check this view's pipController
-            if let pipController = pipController {
-                pipController.stopPictureInPicture()
-                result(true)
-                return
-            }
+        // First check this view's pipController
+        if let pipController = pipController {
+            pipController.stopPictureInPicture()
+            result(true)
+            return
+        }
 
-            // Check other views for the same controller (e.g. navigated away from detail to list)
-            if let controllerIdValue = controllerId {
-                let allViews = SharedPlayerManager.shared.findAllViewsForController(controllerIdValue)
+        // Check other views for the same controller (e.g. navigated away from detail to list)
+        if let controllerIdValue = controllerId {
+            let allViews = SharedPlayerManager.shared.findAllViewsForController(controllerIdValue)
 
-                for view in allViews {
-                    if let otherPipController = view.pipController {
-                        otherPipController.stopPictureInPicture()
-                        result(true)
-                        return
-                    }
+            for view in allViews {
+                if let otherPipController = view.pipController {
+                    otherPipController.stopPictureInPicture()
+                    result(true)
+                    return
                 }
             }
-
-            // Fallback: check SharedPlayerManager for a stored PiP controller
-            if let controllerIdValue = controllerId,
-               let storedPipController = SharedPlayerManager.shared.getActivePipController(for: controllerIdValue) {
-                storedPipController.stopPictureInPicture()
-                result(true)
-                return
-            }
-
-            // Final fallback: auto PiP managed by AVPlayerViewController — no custom
-            // pipController exists. Apple does not expose a way to programmatically
-            // stop AVPlayerViewController-managed PiP. Sync our state so the Dart
-            // side knows PiP ended; the system PiP window persists until the user
-            // closes it via its own controls.
-            if isPipCurrentlyActive {
-                isPipCurrentlyActive = false
-                sendPipStopEvent()
-                handlePipDidStop()
-                result(true)
-                return
-            }
-
-            result(false)
-        } else {
-            result(FlutterError(code: "NOT_SUPPORTED", message: "PiP not supported on this iOS version", details: nil))
         }
+
+        // Fallback: check SharedPlayerManager for a stored PiP controller
+        if let controllerIdValue = controllerId,
+           let storedPipController = SharedPlayerManager.shared.getActivePipController(for: controllerIdValue) {
+            storedPipController.stopPictureInPicture()
+            result(true)
+            return
+        }
+
+        // Final fallback: auto PiP managed by AVPlayerViewController — no custom
+        // pipController exists. Apple does not expose a way to programmatically
+        // stop AVPlayerViewController-managed PiP. Sync our state so the Dart
+        // side knows PiP ended; the system PiP window persists until the user
+        // closes it via its own controls.
+        if isPipCurrentlyActive {
+            isPipCurrentlyActive = false
+            sendPipStopEvent()
+            handlePipDidStop()
+            result(true)
+            return
+        }
+
+        result(false)
     }
 
     func handleEnableAutomaticInlinePip(result: @escaping FlutterResult) {
-        if #available(iOS 14.2, *) {
-            // Check if video is loaded and playing
-            guard let player = player, let currentItem = player.currentItem else {
-                result(FlutterError(code: "NO_VIDEO", message: "No video loaded.", details: nil))
-                return
-            }
-
-            guard currentItem.status == .readyToPlay else {
-                result(FlutterError(code: "NOT_READY", message: "Video is not ready to play.", details: nil))
-                return
-            }
-
-            // Check if PiP is supported on device
-            guard AVPictureInPictureController.isPictureInPictureSupported() else {
-                result(FlutterError(code: "NOT_SUPPORTED", message: "Picture-in-Picture is not supported on this device.", details: nil))
-                return
-            }
-
-
-            // Enable auto background PiP on our custom controller
-            pipController?.canStartPictureInPictureAutomaticallyFromInline = true
-            if let controllerIdValue = controllerId {
-                SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
-            }
-
-            result(true)
-        } else {
-            result(FlutterError(code: "NOT_SUPPORTED", message: "Automatic inline PiP requires iOS 14.2+", details: nil))
+        // Check if video is loaded and playing
+        guard let player = player, let currentItem = player.currentItem else {
+            result(FlutterError(code: "NO_VIDEO", message: "No video loaded.", details: nil))
+            return
         }
+
+        guard currentItem.status == .readyToPlay else {
+            result(FlutterError(code: "NOT_READY", message: "Video is not ready to play.", details: nil))
+            return
+        }
+
+        // Check if PiP is supported on device
+        guard AVPictureInPictureController.isPictureInPictureSupported() else {
+            result(FlutterError(code: "NOT_SUPPORTED", message: "Picture-in-Picture is not supported on this device.", details: nil))
+            return
+        }
+
+
+        // Enable auto background PiP on our custom controller
+        pipController?.canStartPictureInPictureAutomaticallyFromInline = true
+        if let controllerIdValue = controllerId {
+            SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
+        }
+
+        result(true)
     }
 
     func handleDisableAutomaticInlinePip(result: @escaping FlutterResult) {
-        if #available(iOS 14.2, *) {
-            pipController?.canStartPictureInPictureAutomaticallyFromInline = false
-            if let controllerIdValue = controllerId {
-                SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: false)
-            }
-            result(true)
-        } else {
-            result(FlutterError(code: "NOT_SUPPORTED", message: "Automatic inline PiP requires iOS 14.2+", details: nil))
+        pipController?.canStartPictureInPictureAutomaticallyFromInline = false
+        if let controllerIdValue = controllerId {
+            SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: false)
         }
+        result(true)
     }
 
     /// Sets up periodic time observer to update Now Playing elapsed time
@@ -1160,48 +1099,53 @@ extension VideoPlayerView {
             return
         }
 
-        // Get all media selection options for legible characteristics (subtitles/captions)
-        guard let mediaSelectionGroup = asset.mediaSelectionGroup(forMediaCharacteristic: .legible) else {
-            result([])
-            return
-        }
-
-        var tracks: [[String: Any]] = []
-
-        // Get currently selected subtitle option
-        let currentSelection = playerItem.currentMediaSelection.selectedMediaOption(in: mediaSelectionGroup)
-
-        // Add each subtitle option
-        for (index, option) in mediaSelectionGroup.options.enumerated() {
-            let isSelected = option == currentSelection
-
-            // Get language code (e.g., "en", "es", "fr")
-            let languageCode = option.extendedLanguageTag ?? option.locale?.identifier ?? "unknown"
-
-            // Get display name (e.g., "English", "Spanish", "French")
-            var displayName = option.displayName
-
-            // If display name is empty, try to get it from locale
-            if displayName.isEmpty, let locale = option.locale {
-                displayName = Locale.current.localizedString(forIdentifier: locale.identifier) ?? languageCode
+        // Load subtitle/caption options asynchronously — the synchronous
+        // mediaSelectionGroup(forMediaCharacteristic:) is deprecated since
+        // iOS 16 and can block the main thread on network assets.
+        Task { @MainActor in
+            guard let mediaSelectionGroup =
+                try? await asset.loadMediaSelectionGroup(for: .legible) else {
+                result([])
+                return
             }
 
-            // If still empty, use language code
-            if displayName.isEmpty {
-                displayName = languageCode
+            var tracks: [[String: Any]] = []
+
+            // Get currently selected subtitle option
+            let currentSelection = playerItem.currentMediaSelection.selectedMediaOption(in: mediaSelectionGroup)
+
+            // Add each subtitle option
+            for (index, option) in mediaSelectionGroup.options.enumerated() {
+                let isSelected = option == currentSelection
+
+                // Get language code (e.g., "en", "es", "fr")
+                let languageCode = option.extendedLanguageTag ?? option.locale?.identifier ?? "unknown"
+
+                // Get display name (e.g., "English", "Spanish", "French")
+                var displayName = option.displayName
+
+                // If display name is empty, try to get it from locale
+                if displayName.isEmpty, let locale = option.locale {
+                    displayName = Locale.current.localizedString(forIdentifier: locale.identifier) ?? languageCode
+                }
+
+                // If still empty, use language code
+                if displayName.isEmpty {
+                    displayName = languageCode
+                }
+
+                let trackInfo: [String: Any] = [
+                    "index": index,
+                    "language": languageCode,
+                    "displayName": displayName,
+                    "isSelected": isSelected
+                ]
+
+                tracks.append(trackInfo)
             }
 
-            let trackInfo: [String: Any] = [
-                "index": index,
-                "language": languageCode,
-                "displayName": displayName,
-                "isSelected": isSelected
-            ]
-
-            tracks.append(trackInfo)
+            result(tracks)
         }
-
-        result(tracks)
     }
 
     func handleSetMediaInfo(call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -1240,54 +1184,57 @@ extension VideoPlayerView {
             return
         }
 
-        guard let mediaSelectionGroup = asset.mediaSelectionGroup(forMediaCharacteristic: .legible) else {
-            result(FlutterError(code: "NO_SUBTITLES", message: "No subtitle tracks available", details: nil))
-            return
-        }
+        // Async load — see handleGetAvailableSubtitleTracks.
+        Task { @MainActor in
+            guard let mediaSelectionGroup =
+                try? await asset.loadMediaSelectionGroup(for: .legible) else {
+                result(FlutterError(code: "NO_SUBTITLES", message: "No subtitle tracks available", details: nil))
+                return
+            }
 
-        // Index -1 means disable subtitles
-        if index == -1 {
-            playerItem.select(nil, in: mediaSelectionGroup)
-            sendEvent("subtitleChange", data: [
-                "index": -1,
-                "language": "off",
-                "displayName": "Off",
-                "isSelected": false
+            // Index -1 means disable subtitles
+            if index == -1 {
+                playerItem.select(nil, in: mediaSelectionGroup)
+                self.sendEvent("subtitleChange", data: [
+                    "index": -1,
+                    "language": "off",
+                    "displayName": "Off",
+                    "isSelected": false
+                ])
+                result(nil)
+                return
+            }
+
+            // Validate index
+            guard index >= 0 && index < mediaSelectionGroup.options.count else {
+                result(FlutterError(code: "INVALID_INDEX", message: "Invalid subtitle track index", details: nil))
+                return
+            }
+
+            // Select the subtitle option
+            let option = mediaSelectionGroup.options[index]
+            playerItem.select(option, in: mediaSelectionGroup)
+
+            let languageCode = option.extendedLanguageTag ?? option.locale?.identifier ?? "unknown"
+            var displayName = option.displayName
+
+            if displayName.isEmpty, let locale = option.locale {
+                displayName = Locale.current.localizedString(forIdentifier: locale.identifier) ?? languageCode
+            }
+
+            if displayName.isEmpty {
+                displayName = languageCode
+            }
+
+            self.sendEvent("subtitleChange", data: [
+                "index": index,
+                "language": languageCode,
+                "displayName": displayName,
+                "isSelected": true
             ])
+
             result(nil)
-            return
         }
-
-        // Validate index
-        guard index >= 0 && index < mediaSelectionGroup.options.count else {
-            result(FlutterError(code: "INVALID_INDEX", message: "Invalid subtitle track index", details: nil))
-            return
-        }
-
-        // Select the subtitle option
-        let option = mediaSelectionGroup.options[index]
-        playerItem.select(option, in: mediaSelectionGroup)
-
-        let languageCode = option.extendedLanguageTag ?? option.locale?.identifier ?? "unknown"
-        var displayName = option.displayName
-
-        if displayName.isEmpty, let locale = option.locale {
-            displayName = Locale.current.localizedString(forIdentifier: locale.identifier) ?? languageCode
-        }
-
-        if displayName.isEmpty {
-            displayName = languageCode
-        }
-
-
-        sendEvent("subtitleChange", data: [
-            "index": index,
-            "language": languageCode,
-            "displayName": displayName,
-            "isSelected": true
-        ])
-
-        result(nil)
     }
 
     /// Returns the active key window across all connected scenes.

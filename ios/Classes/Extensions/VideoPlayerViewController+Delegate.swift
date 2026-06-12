@@ -6,10 +6,8 @@ extension VideoPlayerView {
     func handlePipWillStart() {
         isPipCurrentlyActive = true
 
-        if #available(iOS 14.2, *) {
-            if let controllerIdValue = controllerId {
-                SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: false)
-            }
+        if let controllerIdValue = controllerId {
+            SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: false)
         }
 
         var mediaInfo = currentMediaInfo
@@ -175,7 +173,6 @@ extension VideoPlayerView: AVPlayerViewControllerDelegate {
 }
 
 // MARK: - AVPictureInPictureControllerDelegate
-@available(iOS 14.0, *)
 extension VideoPlayerView: AVPictureInPictureControllerDelegate {
     public func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         if let controllerIdValue = controllerId {
@@ -236,10 +233,8 @@ extension VideoPlayerView: AVPictureInPictureControllerDelegate {
         }
 
         // Re-enable background PiP tracking
-        if #available(iOS 14.2, *) {
-            if let controllerIdValue = controllerId, canStartPictureInPictureAutomatically {
-                SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
-            }
+        if let controllerIdValue = controllerId, canStartPictureInPictureAutomatically {
+            SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
         }
     }
 
@@ -254,10 +249,8 @@ extension VideoPlayerView: AVPictureInPictureControllerDelegate {
         handlePipDidStop()
 
         // WillStart may have fired and disabled auto-PiP — re-enable it.
-        if #available(iOS 14.2, *) {
-            if let controllerIdValue = controllerId, canStartPictureInPictureAutomatically {
-                SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
-            }
+        if let controllerIdValue = controllerId, canStartPictureInPictureAutomatically {
+            SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
         }
     }
 

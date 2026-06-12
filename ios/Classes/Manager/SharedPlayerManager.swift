@@ -94,9 +94,7 @@ class SharedPlayerManager: NSObject {
     }
 
     private func configurePlayerForBackgroundPlayback(_ player: AVPlayer) {
-        if #available(iOS 15.0, *) {
-            player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
-        }
+        player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
         // Start playing as soon as enough data is available for the first frame,
         // rather than waiting for a full buffer. This is set at creation time so
         // it takes effect before any content is loaded — setting it after loadUrl
@@ -340,9 +338,7 @@ class SharedPlayerManager: NSObject {
         controllersWithManualPiP.remove(controllerId)
 
         // Clear active PiP controller reference
-        if #available(iOS 14.0, *) {
-            activePipControllers.removeValue(forKey: controllerId)
-        }
+        activePipControllers.removeValue(forKey: controllerId)
 
         // Clear global playback controls only when no shared player remains.
         // MPRemoteCommandCenter and Now Playing metadata are process-global;
@@ -391,9 +387,7 @@ class SharedPlayerManager: NSObject {
         mediaInfoCache.removeAll()
         controllerWithAutomaticPiP = nil
         controllersWithManualPiP.removeAll()
-        if #available(iOS 14.0, *) {
-            activePipControllers.removeAll()
-        }
+        activePipControllers.removeAll()
         RemoteCommandManager.shared.removeAllTargets()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
 
@@ -419,7 +413,6 @@ class SharedPlayerManager: NSObject {
 
     /// Starts global AirPlay route detection
     /// This monitors AirPlay device availability across the entire app
-    @available(iOS 11.0, *)
     func startAirPlayRouteDetection() {
         lock.lock()
         defer { lock.unlock() }
@@ -449,7 +442,6 @@ class SharedPlayerManager: NSObject {
     }
 
     /// Stops global AirPlay route detection
-    @available(iOS 11.0, *)
     func stopAirPlayRouteDetection() {
         lock.lock()
         defer { lock.unlock() }
@@ -481,13 +473,11 @@ class SharedPlayerManager: NSObject {
     /// KVO observer for route detector changes
     override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey : Any]?, context: UnsafeMutableRawPointer?) {
         if keyPath == "multipleRoutesDetected" {
-            if #available(iOS 11.0, *) {
-                lock.lock()
-                let isAvailable = globalRouteDetector?.multipleRoutesDetected
-                lock.unlock()
-                if let isAvailable = isAvailable {
-                    sendAirPlayAvailabilityEvent(isAvailable: isAvailable)
-                }
+            lock.lock()
+            let isAvailable = globalRouteDetector?.multipleRoutesDetected
+            lock.unlock()
+            if let isAvailable = isAvailable {
+                sendAirPlayAvailabilityEvent(isAvailable: isAvailable)
             }
         }
     }
@@ -607,7 +597,6 @@ class SharedPlayerManager: NSObject {
 
     /// Store the active PiP controller for a given controller ID.
     /// This allows PiP to be exited even after the originating view is disposed.
-    @available(iOS 14.0, *)
     func setActivePipController(_ pipController: AVPictureInPictureController, for controllerId: Int) {
         lock.lock()
         defer { lock.unlock() }
@@ -615,7 +604,6 @@ class SharedPlayerManager: NSObject {
     }
 
     /// Clear the active PiP controller for a given controller ID.
-    @available(iOS 14.0, *)
     func clearActivePipController(for controllerId: Int) {
         lock.lock()
         defer { lock.unlock() }
@@ -623,7 +611,6 @@ class SharedPlayerManager: NSObject {
     }
 
     /// Get the active PiP controller for a given controller ID, if any.
-    @available(iOS 14.0, *)
     func getActivePipController(for controllerId: Int) -> AVPictureInPictureController? {
         lock.lock()
         defer { lock.unlock() }
@@ -667,7 +654,6 @@ class SharedPlayerManager: NSObject {
     /// Enable automatic PiP for a specific controller and disable for all others
     /// This ensures only one player can enter automatic PiP at a time
     /// IMPORTANT: Only enables on the MOST RECENT (primary) view for that controller
-    @available(iOS 14.2, *)
     func setAutomaticPiPEnabled(for controllerId: Int, enabled: Bool) {
         lock.lock()
         defer { lock.unlock() }

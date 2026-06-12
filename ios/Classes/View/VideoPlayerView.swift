@@ -186,9 +186,7 @@ import QuartzCore
             // non-shared players are still live HLS and need the same flags.
             playerViewController = AVPlayerViewController()
             let newPlayer = AVPlayer()
-            if #available(iOS 15.0, *) {
-                newPlayer.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
-            }
+            newPlayer.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
             newPlayer.automaticallyWaitsToMinimizeStalling = false
             player = newPlayer
             playerViewController.player = player
@@ -243,12 +241,10 @@ import QuartzCore
                 self.canStartPictureInPictureAutomatically = argsCanStartAutomatically
             }
 
-            if #available(iOS 14.2, *) {
-                // Start with automatic PiP DISABLED
-                // It will be enabled when this specific player starts playing (if allowed)
-                // This prevents conflicts when multiple players exist
-                playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
-            }
+            // Start with automatic PiP DISABLED
+            // It will be enabled when this specific player starts playing (if allowed)
+            // This prevents conflicts when multiple players exist
+            playerViewController.canStartPictureInPictureAutomaticallyFromInline = false
 
             // Store media info if provided during initialization
             // This ensures we have the correct media info even for shared players
@@ -273,19 +269,17 @@ import QuartzCore
             // If this controller is currently the one with automatic PiP enabled OR if the player is playing,
             // this new view should become the primary view and get automatic PiP
             // BUT ONLY if manual PiP is not active
-            if #available(iOS 14.2, *) {
-                let isActiveForAutoPiP = SharedPlayerManager.shared.isControllerActiveForAutoPiP(controllerIdValue)
-                let isPlaying = player?.rate ?? 0 > 0
+            let isActiveForAutoPiP = SharedPlayerManager.shared.isControllerActiveForAutoPiP(controllerIdValue)
+            let isPlaying = player?.rate ?? 0 > 0
 
-                if isActiveForAutoPiP || isPlaying {
-                    if canStartPictureInPictureAutomatically {
-                        // Check if manual PiP is active - if so, skip re-enabling automatic PiP
-                        if !SharedPlayerManager.shared.isManualPiPActive(controllerIdValue) {
-                            // Set this new view as the primary view
-                            SharedPlayerManager.shared.setPrimaryView(viewId, for: controllerIdValue)
-                            // Re-apply automatic PiP settings to enable it on this new view
-                            SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
-                        }
+            if isActiveForAutoPiP || isPlaying {
+                if canStartPictureInPictureAutomatically {
+                    // Check if manual PiP is active - if so, skip re-enabling automatic PiP
+                    if !SharedPlayerManager.shared.isManualPiPActive(controllerIdValue) {
+                        // Set this new view as the primary view
+                        SharedPlayerManager.shared.setPrimaryView(viewId, for: controllerIdValue)
+                        // Re-apply automatic PiP settings to enable it on this new view
+                        SharedPlayerManager.shared.setAutomaticPiPEnabled(for: controllerIdValue, enabled: true)
                     }
                 }
             }
@@ -469,7 +463,6 @@ import QuartzCore
     /// Creates the custom AVPictureInPictureController eagerly so it's warmed up
     /// for background PiP. Freshly created controllers need time before
     /// startPictureInPicture() works reliably.
-    @available(iOS 14.0, *)
     func ensurePipController() {
         guard pipController == nil else { return }
         if let playerLayer = findPlayerLayer() {
@@ -477,7 +470,7 @@ import QuartzCore
             pipController?.delegate = self
             // Enable auto background PiP on our controller (declarative).
             // Since we own the controller, stopPictureInPicture() always works.
-            if #available(iOS 14.2, *), canStartPictureInPictureAutomatically {
+            if canStartPictureInPictureAutomatically {
                 pipController?.canStartPictureInPictureAutomaticallyFromInline = true
             }
             if let ctrl = pipController, let controllerIdValue = controllerId {
@@ -732,10 +725,8 @@ import QuartzCore
 
         // Try to stop PiP gracefully if it was active
         if isPipActiveNow {
-            if #available(iOS 14.0, *) {
-                if let pipCtrl = pipController, pipCtrl.isPictureInPictureActive {
-                    pipCtrl.stopPictureInPicture()
-                }
+            if let pipCtrl = pipController, pipCtrl.isPictureInPictureActive {
+                pipCtrl.stopPictureInPicture()
             }
         }
 
@@ -745,7 +736,7 @@ import QuartzCore
         // Handle automatic PiP transfer for shared players
         // If this was the primary view (the one with automatic PiP enabled) OR if the player is playing,
         // we need to transfer automatic PiP to another view using the same controller
-        if #available(iOS 14.2, *), let controllerIdValue = controllerId {
+        if let controllerIdValue = controllerId {
             let wasPrimaryView = SharedPlayerManager.shared.isPrimaryView(viewId, for: controllerIdValue)
             let wasAutoEnabled = SharedPlayerManager.shared.isControllerActiveForAutoPiP(controllerIdValue)
             let isPlaying = player?.rate ?? 0 > 0

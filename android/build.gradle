@@ -2,14 +2,17 @@ group = "com.huddlecommunity.native_video_player"
 version = "0.1.0"
 
 buildscript {
-    ext.kotlin_version = "2.1.0"
+    // Only used when building the plugin standalone (e.g. the example app);
+    // a consuming app's own AGP/Kotlin versions apply otherwise. Kept in
+    // sync with frosty's toolchain.
+    ext.kotlin_version = "2.2.20"
     repositories {
         google()
         mavenCentral()
     }
 
     dependencies {
-        classpath("com.android.tools.build:gradle:8.9.1")
+        classpath("com.android.tools.build:gradle:8.11.1")
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version")
     }
 }
@@ -47,20 +50,6 @@ android {
         minSdk = 24
     }
 
-    dependencies {
-        // ExoPlayer / Media3 dependencies
-        implementation("androidx.media3:media3-exoplayer:1.9.2")
-        implementation("androidx.media3:media3-ui:1.9.2")
-        implementation("androidx.media3:media3-exoplayer-hls:1.9.2")
-        implementation("androidx.media3:media3-session:1.9.2")
-
-        // Media notification style
-        implementation("androidx.media:media:1.7.0")
-
-        testImplementation("org.jetbrains.kotlin:kotlin-test")
-        testImplementation("org.mockito:mockito-core:5.0.0")
-    }
-
     testOptions {
         unitTests.all {
             useJUnitPlatform()
@@ -72,4 +61,16 @@ android {
             }
         }
     }
+}
+
+dependencies {
+    // ExoPlayer / Media3
+    def media3_version = "1.10.1"
+    implementation("androidx.media3:media3-exoplayer:$media3_version")
+    implementation("androidx.media3:media3-ui:$media3_version")
+    implementation("androidx.media3:media3-exoplayer-hls:$media3_version")
+    implementation("androidx.media3:media3-session:$media3_version")
+
+    testImplementation("org.jetbrains.kotlin:kotlin-test")
+    testImplementation("org.mockito:mockito-core:5.0.0")
 }

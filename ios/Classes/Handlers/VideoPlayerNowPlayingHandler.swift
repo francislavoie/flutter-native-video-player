@@ -105,7 +105,10 @@ extension VideoPlayerView {
         nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = isLive
 
         // --- Playback duration & elapsed time (VOD only) ---
-        if !isLive, let duration = player?.currentItem?.asset.duration {
+        // AVPlayerItem.duration, not asset.duration — the synchronous AVAsset
+        // property is deprecated since iOS 16 and can block on network assets;
+        // the item's duration is already resolved once playback is ready.
+        if !isLive, let duration = player?.currentItem?.duration {
             let durationSeconds = CMTimeGetSeconds(duration)
             if durationSeconds.isFinite {
                 nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = durationSeconds

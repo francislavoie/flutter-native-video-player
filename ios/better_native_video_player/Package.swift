@@ -6,7 +6,7 @@ import PackageDescription
 let package = Package(
     name: "better_native_video_player",
     platforms: [
-        .iOS("14.0")
+        .iOS("15.0")
     ],
     products: [
         .library(
