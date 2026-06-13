@@ -48,6 +48,11 @@ class VideoPlayerObserver(
     private var stallWatchdogRunnable: Runnable? = null
     private var stallRecoveryAttempt = 0
 
+    // Consecutive BEHIND_LIVE_WINDOW recoveries. Capped like the stall watchdog
+    // so a stream that keeps falling off the live window can't re-prepare
+    // forever (silently, to the host); reset on STATE_READY.
+    private var behindLiveWindowAttempt = 0
+
     // Guard to start timeUpdateRunnable only once (on first STATE_READY)
     private var isTimeUpdateRunning = false
 
@@ -128,7 +133,12 @@ class VideoPlayerObserver(
 
         val active = mediaPlaylist.tags.any { tag ->
             tag.startsWith("#EXT-X-DATERANGE") &&
-                (tag.contains("CLASS=\"twitch-stitched-ad\"") || tag.contains("ID=\"stitched-ad-")) &&
+                // Twitch marks stitched ads via CLASS / ID, but the naming has
+                // shifted over time; the X-TV-TWITCH-AD-* attribute prefix is the
+                // most durable signal (same heuristic streamlink/yt-dlp use).
+                (tag.contains("CLASS=\"twitch-stitched-ad\"") ||
+                    tag.contains("ID=\"stitched-ad-") ||
+                    tag.contains("X-TV-TWITCH-AD-")) &&
                 isWallClockInDaterange(playheadWallClockMs, tag)
         }
         updateAdBreakState(active)
@@ -268,9 +278,10 @@ class VideoPlayerObserver(
             }
             Player.STATE_READY -> {
                 cancelStallWatchdog()
-                // Reset buffering flag and recovery counter when we're ready
+                // Reset buffering flag and recovery counters when we're ready
                 hasReportedBuffering = false
                 stallRecoveryAttempt = 0
+                behindLiveWindowAttempt = 0
 
                 // Start periodic time updates on first ready
                 if (!isTimeUpdateRunning) {
@@ -366,8 +377,20 @@ class VideoPlayerObserver(
 
     override fun onPlayerError(error: PlaybackException) {
         if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+            behindLiveWindowAttempt++
+            if (behindLiveWindowAttempt > MAX_RECOVERY_ATTEMPTS) {
+                // Re-preparing keeps landing behind the window — stop looping
+                // and surface an error so the host's recovery ladder takes over.
+                Log.e(TAG, "Behind live window exceeded $MAX_RECOVERY_ATTEMPTS recoveries — giving up")
+                eventHandler.sendEvent(
+                    "error",
+                    mapOf("message" to "Fell behind the live window after $MAX_RECOVERY_ATTEMPTS recovery attempts")
+                )
+                return
+            }
             // Fell behind the live window — seek to live edge and re-prepare
-            Log.w(TAG, "Behind live window, seeking to live edge")
+            // (counter resets on STATE_READY once playback recovers).
+            Log.w(TAG, "Behind live window (attempt $behindLiveWindowAttempt), seeking to live edge")
             eventHandler.sendEvent("buffering")
             // Mark reported so the STATE_BUFFERING transition from prepare()
             // doesn't emit a duplicate buffering event.

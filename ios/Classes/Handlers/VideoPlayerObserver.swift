@@ -622,8 +622,12 @@ extension VideoPlayerView: AVPlayerItemMetadataCollectorPushDelegate {
 
         var ranges: [(start: Date, end: Date)] = []
         for group in metadataGroups {
+            // Twitch marks stitched ads via CLASS / ID, but the naming has
+            // shifted over time; the X-TV-TWITCH-AD-* attribute prefix is the
+            // most durable signal (same heuristic streamlink/yt-dlp use).
             let isStitchedAd = group.classifyingLabel == "twitch-stitched-ad"
                 || group.uniqueID?.hasPrefix("stitched-ad-") == true
+                || group.items.contains { ($0.key as? String)?.hasPrefix("X-TV-TWITCH-AD-") == true }
             guard isStitchedAd else { continue }
 
             let start = group.startDate
