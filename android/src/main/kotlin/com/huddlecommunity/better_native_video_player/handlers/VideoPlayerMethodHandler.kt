@@ -362,7 +362,7 @@ class VideoPlayerMethodHandler(
                 MediaItem.LiveConfiguration.Builder()
                     .setTargetOffsetMs(2_000)
                     .setMinOffsetMs(1_000)
-                    .setMaxOffsetMs(10_000)
+                    .setMaxOffsetMs(6_000)
                     .setMinPlaybackSpeed(0.97f)
                     .setMaxPlaybackSpeed(1.03f)
                     .build()
