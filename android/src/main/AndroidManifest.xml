@@ -12,7 +12,7 @@
 
     <application>
         <service
-            android:name=".PlaybackForegroundService"
+            android:name="com.huddlecommunity.better_native_video_player.PlaybackForegroundService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
     </application>

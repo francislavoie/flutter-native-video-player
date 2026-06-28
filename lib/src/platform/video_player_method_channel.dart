@@ -307,7 +307,12 @@ class VideoPlayerMethodChannel {
     try {
       await _methodChannel.invokeMethod<void>(
         'setBackgroundPlaybackEnabled',
-        <String, Object>{'enabled': enabled},
+        // viewId is required: the shared channel routes to the view by it;
+        // without it the plugin returns NO_VIEW and the call is dropped.
+        <String, Object>{
+          'viewId': primaryPlatformViewId,
+          'enabled': enabled,
+        },
       );
     } catch (e) {
       debugPrint('Error calling setBackgroundPlaybackEnabled: $e');
