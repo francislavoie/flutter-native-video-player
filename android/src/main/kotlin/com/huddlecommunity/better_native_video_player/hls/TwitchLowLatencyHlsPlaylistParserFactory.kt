@@ -22,17 +22,26 @@ import java.io.InputStream
  * playback ~2 segments (~4s) behind — the latency regression vs the old WebView
  * player.
  *
- * This factory wraps the stock parser and rewrites each prefetch line into a
- * normal `#EXTINF` segment *before* media3 parses it, so ExoPlayer treats them
- * as playable. Promoting both matches the web player's latency.
+ * This factory wraps the stock parser and rewrites prefetch lines into normal
+ * `#EXTINF` segments *before* media3 parses it, so ExoPlayer treats them as
+ * playable.
+ *
+ * Twitch advertises two prefetch segments. The second is the bleeding edge the
+ * encoder is still writing, so reaching for it occasionally hits a not-ready
+ * segment → a brief stall, after which the player sits ~1 segment further back
+ * and the gentle live-offset catch-up never recovers it. media3 (unlike the web
+ * player) can't consume the partial segment, so we promote only the first
+ * [maxPromoted] (oldest, reliably-ready) prefetch segments and drop the rest —
+ * trading the theoretical minimum latency for stable playback near the edge.
  */
 @UnstableApi
 class TwitchLowLatencyHlsPlaylistParserFactory(
     private val delegate: HlsPlaylistParserFactory = DefaultHlsPlaylistParserFactory(),
+    private val maxPromoted: Int = 1,
 ) : HlsPlaylistParserFactory {
 
     override fun createPlaylistParser(): ParsingLoadable.Parser<HlsPlaylist> =
-        RewritingParser(delegate.createPlaylistParser())
+        RewritingParser(delegate.createPlaylistParser(), maxPromoted)
 
     override fun createPlaylistParser(
         multivariantPlaylist: HlsMultivariantPlaylist,
@@ -40,16 +49,19 @@ class TwitchLowLatencyHlsPlaylistParserFactory(
     ): ParsingLoadable.Parser<HlsPlaylist> =
         RewritingParser(
             delegate.createPlaylistParser(multivariantPlaylist, previousMediaPlaylist),
+            maxPromoted,
         )
 
     /** Transforms the playlist text, then delegates to the real parser. */
     private class RewritingParser(
         private val inner: ParsingLoadable.Parser<HlsPlaylist>,
+        private val maxPromoted: Int,
     ) : ParsingLoadable.Parser<HlsPlaylist> {
         override fun parse(uri: Uri, inputStream: InputStream): HlsPlaylist {
             val text = inputStream.readBytes().toString(Charsets.UTF_8)
             // Master playlists never carry the tag, so this is a no-op for them.
-            val rewritten = if (text.contains(PREFETCH_TAG)) promotePrefetch(text) else text
+            val rewritten =
+                if (text.contains(PREFETCH_TAG)) promotePrefetch(text, maxPromoted) else text
             return inner.parse(
                 uri,
                 ByteArrayInputStream(rewritten.toByteArray(Charsets.UTF_8)),
@@ -66,12 +78,14 @@ class TwitchLowLatencyHlsPlaylistParserFactory(
         private const val DEFAULT_SEGMENT_DURATION = "2.000"
 
         /**
-         * Rewrites every `#EXT-X-TWITCH-PREFETCH:<url>` line into a standard
-         * `#EXTINF` + URL segment, in place (the tags are already in playback
-         * order at the playlist tail). Each promoted segment continues the media
-         * sequence, so the live edge advances and ExoPlayer plays closer to live.
+         * Rewrites the first [maxPromoted] `#EXT-X-TWITCH-PREFETCH:<url>` lines
+         * (oldest first — they're in playback order at the playlist tail) into
+         * standard `#EXTINF` + URL segments and drops any beyond that. Each
+         * promoted segment continues the media sequence, so the live edge
+         * advances and ExoPlayer plays closer to live, while dropping the
+         * newest (still-being-written) prefetch avoids stalls.
          */
-        fun promotePrefetch(playlist: String): String {
+        fun promotePrefetch(playlist: String, maxPromoted: Int): String {
             val lines = playlist.split("\n")
 
             // Reuse the stream's own segment duration so ExoPlayer's buffering
@@ -86,19 +100,24 @@ class TwitchLowLatencyHlsPlaylistParserFactory(
 
             val out = StringBuilder(playlist.length + 128)
             var promoted = 0
+            var dropped = 0
             for (line in lines) {
                 if (line.startsWith(PREFETCH_TAG)) {
                     val url = line.substringAfter(PREFETCH_TAG).trim()
-                    if (url.isNotEmpty()) {
-                        out.append(EXTINF_TAG).append(duration).append(",\n")
-                        out.append(url).append('\n')
-                        promoted++
+                    when {
+                        url.isEmpty() -> {}
+                        promoted < maxPromoted -> {
+                            out.append(EXTINF_TAG).append(duration).append(",\n")
+                            out.append(url).append('\n')
+                            promoted++
+                        }
+                        else -> dropped++
                     }
                 } else {
                     out.append(line).append('\n')
                 }
             }
-            Log.d(TAG, "Promoted $promoted prefetch segment(s) at ${duration}s")
+            Log.d(TAG, "Promoted $promoted prefetch segment(s) at ${duration}s, dropped $dropped")
             return out.toString()
         }
     }

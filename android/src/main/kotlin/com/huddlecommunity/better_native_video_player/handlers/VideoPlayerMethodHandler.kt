@@ -361,11 +361,11 @@ class VideoPlayerMethodHandler(
         if (isHls) {
             mediaItemBuilder.setLiveConfiguration(
                 MediaItem.LiveConfiguration.Builder()
-                    .setTargetOffsetMs(2_000)
-                    .setMinOffsetMs(1_000)
+                    .setTargetOffsetMs(1_000)
+                    .setMinOffsetMs(500)
                     .setMaxOffsetMs(6_000)
-                    .setMinPlaybackSpeed(0.97f)
-                    .setMaxPlaybackSpeed(1.03f)
+                    .setMinPlaybackSpeed(0.95f)
+                    .setMaxPlaybackSpeed(1.05f)
                     .build()
             )
         }
