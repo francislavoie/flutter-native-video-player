@@ -73,6 +73,7 @@ class TwitchLowLatencyHlsPlaylistParserFactory(
         private const val TAG = "TwitchLowLatency"
         private const val PREFETCH_TAG = "#EXT-X-TWITCH-PREFETCH:"
         private const val EXTINF_TAG = "#EXTINF:"
+        private const val TARGETDURATION_TAG = "#EXT-X-TARGETDURATION:"
         // Twitch low-latency segments are ~2s; only used if no real segment is
         // present to copy a duration from (effectively never).
         private const val DEFAULT_SEGMENT_DURATION = "2.000"
@@ -98,26 +99,45 @@ class TwitchLowLatencyHlsPlaylistParserFactory(
                 ?.takeIf { it.isNotEmpty() }
                 ?: DEFAULT_SEGMENT_DURATION
 
+            // Twitch advertises #EXT-X-TARGETDURATION:5 but emits ~2s segments.
+            // media3 paces media-playlist reloads off the target duration, so
+            // with TD=5 it only polls every ~5-6s while segments arrive every
+            // 2s — the player starves, stalls, and ratchets ~2s further behind
+            // each cycle until it sits far enough back to bridge the slow
+            // reload. Rewriting TD down to the real segment cadence makes
+            // media3 poll in step with the segments, so it sustains a low
+            // offset without starving. (Spec-valid: TD must be >= the rounded
+            // max segment duration, which is what we set it to.)
+            val reloadTarget =
+                kotlin.math.max(1, kotlin.math.ceil(duration.toFloatOrNull() ?: 2f).toInt())
+
             val out = StringBuilder(playlist.length + 128)
             var promoted = 0
             var dropped = 0
             for (line in lines) {
-                if (line.startsWith(PREFETCH_TAG)) {
-                    val url = line.substringAfter(PREFETCH_TAG).trim()
-                    when {
-                        url.isEmpty() -> {}
-                        promoted < maxPromoted -> {
-                            out.append(EXTINF_TAG).append(duration).append(",\n")
-                            out.append(url).append('\n')
-                            promoted++
+                when {
+                    line.startsWith(PREFETCH_TAG) -> {
+                        val url = line.substringAfter(PREFETCH_TAG).trim()
+                        when {
+                            url.isEmpty() -> {}
+                            promoted < maxPromoted -> {
+                                out.append(EXTINF_TAG).append(duration).append(",\n")
+                                out.append(url).append('\n')
+                                promoted++
+                            }
+                            else -> dropped++
                         }
-                        else -> dropped++
                     }
-                } else {
-                    out.append(line).append('\n')
+                    line.startsWith(TARGETDURATION_TAG) ->
+                        out.append(TARGETDURATION_TAG).append(reloadTarget).append('\n')
+                    else -> out.append(line).append('\n')
                 }
             }
-            Log.i("LLDEBUG", "playlist segs=${lines.count { it.startsWith(EXTINF_TAG) }} promoted=$promoted dropped=$dropped dur=${duration}s")
+            Log.i(
+                "LLDEBUG",
+                "playlist segs=${lines.count { it.startsWith(EXTINF_TAG) }} " +
+                    "promoted=$promoted dropped=$dropped dur=${duration}s td->$reloadTarget",
+            )
             return out.toString()
         }
     }
