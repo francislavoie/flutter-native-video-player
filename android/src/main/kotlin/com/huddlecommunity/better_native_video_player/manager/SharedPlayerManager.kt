@@ -75,7 +75,12 @@ object SharedPlayerManager {
             .setAudioAttributes(AudioAttributes.DEFAULT, false)
             .setLoadControl(lowLatencyLoadControl())
             .build()
-            .apply { setWakeMode(C.WAKE_MODE_NETWORK) }
+            .apply {
+                setWakeMode(C.WAKE_MODE_NETWORK)
+                addAnalyticsListener(
+                    com.huddlecommunity.better_native_video_player.hls.LowLatencyDebugListener(this),
+                )
+            }
 
     /// LoadControl tuned for low-latency live HLS.
     ///
