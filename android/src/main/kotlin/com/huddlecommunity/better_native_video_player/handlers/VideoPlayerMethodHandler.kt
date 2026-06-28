@@ -348,13 +348,21 @@ class VideoPlayerMethodHandler(
             }
         }
 
-        // Configure for low-latency live HLS
+        // Configure for low-latency live HLS.
+        //
+        // Target ~2s behind the live edge to match Twitch's "low latency" mode
+        // (the old WebView player's default). media3 ignores Twitch's
+        // proprietary #EXT-X-TWITCH-PREFETCH partial segments, so a full
+        // segment (~2s) is the floor; the playback-speed window below lets the
+        // player gently catch back up to target after a rebuffer instead of
+        // permanently drifting toward maxOffset. Without an explicit target,
+        // media3 defaults to 3×segmentDuration (~6s), which is the regression.
         if (isHls) {
             mediaItemBuilder.setLiveConfiguration(
                 MediaItem.LiveConfiguration.Builder()
-                    .setTargetOffsetMs(6_000)
-                    .setMinOffsetMs(3_000)
-                    .setMaxOffsetMs(15_000)
+                    .setTargetOffsetMs(2_000)
+                    .setMinOffsetMs(1_000)
+                    .setMaxOffsetMs(10_000)
                     .setMinPlaybackSpeed(0.97f)
                     .setMaxPlaybackSpeed(1.03f)
                     .build()
