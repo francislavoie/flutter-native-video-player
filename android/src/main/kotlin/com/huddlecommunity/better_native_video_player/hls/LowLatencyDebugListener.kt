@@ -26,7 +26,7 @@ class LowLatencyDebugListener(private val player: ExoPlayer) : AnalyticsListener
     private fun snapshot(): String {
         val offset = player.currentLiveOffset.let { if (it == C.TIME_UNSET) "?" else "${it}ms" }
         val ahead = player.bufferedPosition - player.currentPosition
-        return "liveOffset=$offset bufAhead=${ahead}ms totalBuf=${player.totalBufferedDurationMs}ms"
+        return "liveOffset=$offset bufAhead=${ahead}ms totalBuf=${player.totalBufferedDuration}ms"
     }
 
     override fun onPlaybackStateChanged(eventTime: AnalyticsListener.EventTime, state: Int) {
