@@ -133,11 +133,7 @@ class TwitchLowLatencyHlsPlaylistParserFactory(
                     else -> out.append(line).append('\n')
                 }
             }
-            Log.i(
-                "LLDEBUG",
-                "playlist segs=${lines.count { it.startsWith(EXTINF_TAG) }} " +
-                    "promoted=$promoted dropped=$dropped dur=${duration}s td->$reloadTarget",
-            )
+            Log.d(TAG, "promoted=$promoted dropped=$dropped dur=${duration}s targetDuration=$reloadTarget")
             return out.toString()
         }
     }
