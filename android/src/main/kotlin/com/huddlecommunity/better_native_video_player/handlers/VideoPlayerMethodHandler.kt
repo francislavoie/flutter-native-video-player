@@ -19,6 +19,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.hls.HlsMediaSource
+import com.huddlecommunity.better_native_video_player.hls.TwitchLowLatencyHlsPlaylistParserFactory
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -376,6 +377,9 @@ class VideoPlayerMethodHandler(
             // HLS stream
             Log.d(TAG, "Creating HLS media source")
             HlsMediaSource.Factory(finalDataSourceFactory)
+                // Promote Twitch's #EXT-X-TWITCH-PREFETCH segments so playback
+                // rides the live edge (low latency); no-op for non-Twitch HLS.
+                .setPlaylistParserFactory(TwitchLowLatencyHlsPlaylistParserFactory())
                 .createMediaSource(mediaItem)
         } else {
             // Progressive download/playback (MP4, local files, etc.)
