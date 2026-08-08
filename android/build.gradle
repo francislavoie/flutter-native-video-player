@@ -51,6 +51,11 @@ android {
     }
 
     testOptions {
+        // android.util.* are stubs that throw in JVM unit tests. Several
+        // otherwise-pure helpers (playlist and quality parsing) log as they go,
+        // so without this the whole unit test source set fails on Log.d.
+        unitTests.returnDefaultValues = true
+
         unitTests.all {
             useJUnitPlatform()
 

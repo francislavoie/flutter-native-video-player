@@ -1,7 +1,6 @@
 package com.huddlecommunity.better_native_video_player.hls
 
 import android.net.Uri
-import android.util.Log
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.hls.playlist.DefaultHlsPlaylistParserFactory
 import androidx.media3.exoplayer.hls.playlist.HlsMediaPlaylist
@@ -70,7 +69,6 @@ class TwitchLowLatencyHlsPlaylistParserFactory(
     }
 
     companion object {
-        private const val TAG = "TwitchLowLatency"
         private const val PREFETCH_TAG = "#EXT-X-TWITCH-PREFETCH:"
         private const val EXTINF_TAG = "#EXTINF:"
         private const val TARGETDURATION_TAG = "#EXT-X-TARGETDURATION:"
@@ -113,7 +111,6 @@ class TwitchLowLatencyHlsPlaylistParserFactory(
 
             val out = StringBuilder(playlist.length + 128)
             var promoted = 0
-            var dropped = 0
             for (line in lines) {
                 when {
                     line.startsWith(PREFETCH_TAG) -> {
@@ -125,7 +122,9 @@ class TwitchLowLatencyHlsPlaylistParserFactory(
                                 out.append(url).append('\n')
                                 promoted++
                             }
-                            else -> dropped++
+                            // Beyond maxPromoted: the newest prefetch is still
+                            // being written, so drop it rather than stall on it.
+                            else -> {}
                         }
                     }
                     line.startsWith(TARGETDURATION_TAG) ->
@@ -133,7 +132,6 @@ class TwitchLowLatencyHlsPlaylistParserFactory(
                     else -> out.append(line).append('\n')
                 }
             }
-            Log.d(TAG, "promoted=$promoted dropped=$dropped dur=${duration}s targetDuration=$reloadTarget")
             return out.toString()
         }
     }
